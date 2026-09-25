@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-25T17:45:00+08:00",
+  "title": "Design System: 澄初 AI 金牌导购",
+  "extensions": {
+    "colorMeta": {
+      "ink": { "role": "primary", "displayName": "澄初深墨", "canonical": "#123f55", "tonalRamp": ["#0c3042", "#123f55", "#6f8d99"] },
+      "teal": { "role": "secondary", "displayName": "批注青绿", "canonical": "#3f8b87", "tonalRamp": ["#286763", "#3f8b87", "#dcebe7"] },
+      "paper": { "role": "neutral", "displayName": "暖纸白", "canonical": "#f7f5ef", "tonalRamp": ["#d8ded9", "#f7f5ef", "#fffefa"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "咨询单标题", "purpose": "页面和抽屉主标题。" },
+      "body": { "displayName": "咨询正文", "purpose": "对话、事实与说明。" },
+      "label": { "displayName": "状态标签", "purpose": "SKU、输入提示、版本与状态。" }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "thinking-pulse", "value": "1s ease-in-out", "purpose": "仅用于模型或规则核对中的三点等待状态。" }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "800px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "提交咨询或打开依据的主要动作。",
+      "html": "<button class=\"ds-primary\">发送</button>",
+      "css": ".ds-primary{height:42px;padding:0 16px;border:0;border-radius:3px;background:#123f55;color:#fff}.ds-primary:hover{background:#0c3042}.ds-primary:focus-visible{outline:3px solid rgba(63,139,135,.45)}"
+    },
+    {
+      "name": "Recommendation Row",
+      "kind": "custom",
+      "description": "在同一横向关系中呈现 SKU、名称、理由、限制和价格。",
+      "html": "<article class=\"ds-product-row\"><small>P101</small><div><strong>商品名称</strong><p>推荐理由</p></div><b>¥169</b></article>",
+      "css": ".ds-product-row{display:grid;grid-template-columns:48px 1fr auto;gap:12px;padding:17px 0;border-bottom:1px solid #d8ded9;color:#123f55;background:#fffefa}"
+    }
+  ],
+  "narrative": {
+    "northStar": "护理咨询单",
+    "overview": "深蓝墨色、灰绿批注和暖白纸面构成持续更新的导购记录。事实与取舍优先于营销装饰。",
+    "keyCharacteristics": ["暖白纸面", "深蓝墨色", "规则线与列关系", "事实可追溯"],
+    "dos": ["把价格、理由和限制放在同一上下文", "移动端优先保留对话与输入"],
+    "donts": ["使用营销摄影替代事实", "堆叠同形圆角卡片", "使用侧边色条或英文眉题"]
+  }
+}
