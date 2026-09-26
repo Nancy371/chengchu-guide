@@ -15,17 +15,26 @@ function extractJson(value: string): unknown {
   try { return JSON.parse(trimmed); } catch { return null; }
 }
 
-export class BailianModelAdapter {
-  private key = runtimeEnv("DASHSCOPE_API_KEY") ?? runtimeEnv("MODEL_API_KEY");
-  private baseUrl = (runtimeEnv("DASHSCOPE_BASE_URL") ?? "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
-  private model = runtimeEnv("DASHSCOPE_MODEL") ?? "qwen-plus";
+export class DeepSeekModelAdapter {
+  private key = runtimeEnv("DEEPSEEK_API_KEY") ?? runtimeEnv("MODEL_API_KEY");
+  private baseUrl = (runtimeEnv("DEEPSEEK_BASE_URL") ?? "https://api.deepseek.com").replace(/\/$/, "");
+  private extractModel = runtimeEnv("DEEPSEEK_EXTRACT_MODEL") ?? "deepseek-flash";
+  private reasonModel = runtimeEnv("DEEPSEEK_REASON_MODEL") ?? "deepseek-v4-pro";
+  private normalizeModel = runtimeEnv("DEEPSEEK_NORMALIZE_MODEL") ?? "deepseek-flash";
+
+  private modelFor(stage: Stage): string {
+    if (stage === "reason") return this.reasonModel;
+    if (stage === "normalize") return this.normalizeModel;
+    return this.extractModel;
+  }
 
   private emptyAudit(stage: Stage, reason: string): ModelAudit {
-    return { stage, model: this.model, modelInvoked: false, parseSuccess: false, schemaSuccess: false, businessAccepted: false, used: false, latencyMs: 0, failureReason: reason };
+    return { stage, model: this.modelFor(stage), modelInvoked: false, parseSuccess: false, schemaSuccess: false, businessAccepted: false, used: false, latencyMs: 0, failureReason: reason };
   }
 
   private async invoke(stage: Stage, messages: Array<{ role: string; content: string }>, timeoutMs: number, thinking: boolean, responseFormat = false) {
     if (!this.key) return { value: null, audit: this.emptyAudit(stage, "model_not_configured") };
+    const model = this.modelFor(stage);
     const started = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -34,13 +43,12 @@ export class BailianModelAdapter {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${this.key}` },
         body: JSON.stringify({
-          model: this.model,
+          model,
           messages,
-          temperature: 0.1,
           max_tokens: thinking ? 2048 : 900,
           ...(responseFormat ? { response_format: { type: "json_object" } } : {}),
-          enable_thinking: thinking,
-          ...(thinking ? { thinking_budget: 2048 } : {}),
+          thinking: { type: thinking ? "enabled" : "disabled" },
+          ...(thinking ? { reasoning_effort: "high" } : {}),
         }),
         signal: controller.signal,
       });
@@ -51,7 +59,7 @@ export class BailianModelAdapter {
       return {
         value,
         raw: content,
-        audit: { stage, model: this.model, modelInvoked: true, parseSuccess: value !== null, schemaSuccess: value !== null, businessAccepted: false, used: false, latencyMs: Date.now() - started, ...(value === null ? { failureReason: "json_parse_failed" } : {}) } satisfies ModelAudit,
+        audit: { stage, model, modelInvoked: true, parseSuccess: value !== null, schemaSuccess: value !== null, businessAccepted: false, used: false, latencyMs: Date.now() - started, ...(value === null ? { failureReason: "json_parse_failed" } : {}) } satisfies ModelAudit,
       };
     } catch (error) {
       const reason = error instanceof Error && error.name === "AbortError" ? "timeout" : error instanceof Error ? error.message : "request_failed";

@@ -1,5 +1,5 @@
 import { applyReasoningProposal, decide, KNOWLEDGE_VERSION } from "./decision";
-import { BailianModelAdapter } from "./model";
+import { DeepSeekModelAdapter } from "./model";
 import { D1GuideRepository } from "./repository";
 import { composeResult } from "./response";
 import { applyDelta, deterministicExtract, mergeDeltas } from "./state";
@@ -8,7 +8,7 @@ import type { DecisionResult, ModelAudit } from "./types";
 export class ConversationRuntime {
   constructor(
     private repository = new D1GuideRepository(),
-    private model = new BailianModelAdapter(),
+    private model = new DeepSeekModelAdapter(),
   ) {}
 
   async handleTurn(sessionId: string, requestId: string, text: string): Promise<{ result: DecisionResult; duplicate: boolean; stale: boolean }> {

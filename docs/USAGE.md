@@ -31,9 +31,11 @@
 
 ## 服务配置
 
-- `DASHSCOPE_API_KEY`：阿里云百炼密钥，仅存服务端。
-- `DASHSCOPE_BASE_URL`：可选，默认兼容接口地址。
-- `DASHSCOPE_MODEL`：可选，默认 `qwen-plus`。
+- `DEEPSEEK_API_KEY`：DeepSeek API 密钥，仅存服务端。
+- `DEEPSEEK_BASE_URL`：可选，默认 `https://api.deepseek.com`。
+- `DEEPSEEK_EXTRACT_MODEL`：可选，默认 `deepseek-flash`，关闭思考。
+- `DEEPSEEK_REASON_MODEL`：可选，默认 `deepseek-v4-pro`，开启思考。
+- `DEEPSEEK_NORMALIZE_MODEL`：可选，默认 `deepseek-flash`，关闭思考。
 - `MODEL_API_KEY`：兼容的密钥变量名。
 
 模型不可用、超时或格式错误时，本地抽取与业务规则继续工作；依据面板会把该阶段记录为降级。会话保留 24 小时，可主动清除。
@@ -45,4 +47,3 @@
 ```bash
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_same_retro_girl.sql
 ```
-

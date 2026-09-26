@@ -11,7 +11,7 @@ pnpm build
 pnpm start
 ```
 
-首次运行前按 [使用说明](docs/USAGE.md) 应用 D1 迁移。未设置 `DASHSCOPE_API_KEY` 时，系统以同一业务规则走本地抽取降级，界面仍可完整试用；设置密钥后调用阿里云百炼 `qwen-plus`。
+首次运行前按 [使用说明](docs/USAGE.md) 应用 D1 迁移。未设置 `DEEPSEEK_API_KEY` 时，系统以同一业务规则走本地抽取降级，界面仍可完整试用；设置密钥后，抽取与格式修复调用 DeepSeek Flash 非思考模式，复杂冲突调用 DeepSeek V4 Pro 思考模式。
 
 ## 文档
 
@@ -27,4 +27,3 @@ pnpm test
 pnpm lint
 pnpm build
 ```
-

@@ -20,9 +20,11 @@
 
 ## 模型调用
 
-- Extractor：`qwen-plus` 非思考模式，8 秒上限，输出带原话引用的状态增量。
-- Reasoner：`qwen-plus` 思考模式，仅处理复杂冲突或安全歧义，24 秒上限，默认 2,048 token。
-- Normalizer：本地先解析；必要时一次非思考格式修复，6 秒上限。只能修表示形式，不能增加事实或候选。
+- Extractor：`deepseek-flash` 非思考模式，8 秒上限，输出带原话引用的状态增量。
+- Reasoner：`deepseek-v4-pro` 思考模式，仅处理复杂冲突或安全歧义，24 秒上限，默认 2,048 token。
+- Normalizer：本地先解析；必要时调用一次 `deepseek-flash` 非思考模式完成格式修复，6 秒上限。只能修表示形式，不能增加事实或候选。
+
+模型通过 DeepSeek 的 OpenAI 兼容 `/chat/completions` 接口调用。每次请求都显式设置思考模式，避免服务端默认值变化影响路由职责；`reasoning_content` 不写入事实库，也不在顾客界面展示。
 
 每轮记录模型是否调用、解析是否成功、Schema 是否合格、业务是否接受、结果是否使用、耗时和失败原因。
 
@@ -35,4 +37,3 @@
 - WebMCP `ask_chengchu_guide`：复用同一 `/api/chat` 可信路径完成一轮咨询。
 
 D1 使用 `sessions` 与 `requests` 两张表。`sessionId + requestId` 唯一约束保证重试不重复推进；会话限流为每分钟 6 次、每天 50 次，全站每天 500 次。
-

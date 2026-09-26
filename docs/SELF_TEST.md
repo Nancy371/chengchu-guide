@@ -1,7 +1,7 @@
 # 真实自测记录
 
 测试日期：2026-09-25  
-环境：本地 Cloudflare Worker + D1，未配置百炼密钥，因此模型阶段明确记录为本地降级；规则、会话、API 与 WebMCP 均为真实运行。
+环境：本地 Cloudflare Worker + D1，未配置 DeepSeek 密钥，因此模型阶段明确记录为本地降级；规则、会话、API 与 WebMCP 均为真实运行。
 
 ## 多轮预算纠正
 
@@ -41,5 +41,4 @@ TypeScript 类型检查、Vinext 生产构建、桌面 1440px、手机 390px、�
 
 ## 尚待联网验证
 
-部署环境配置 `DASHSCOPE_API_KEY` 后，需要再执行一次真实 `qwen-plus` 抽取和复杂推理回归，确认审计记录中的 `modelInvoked` 与 `used` 为真。代码路径已实现，本次环境没有可用密钥，未把降级结果冒充模型结果。
-
+部署环境配置 `DEEPSEEK_API_KEY` 后，需要再执行一次真实 `deepseek-flash` 抽取和 `deepseek-v4-pro` 复杂推理回归，确认审计记录中的 `modelInvoked` 与 `used` 为真。代码路径已实现，本次环境没有可用密钥，未把降级结果冒充模型结果。
