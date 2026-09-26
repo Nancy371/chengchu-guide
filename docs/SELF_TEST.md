@@ -1,7 +1,7 @@
 # 真实自测记录
 
-测试日期：2026-09-25  
-环境：本地 Cloudflare Worker + D1，未配置 DeepSeek 密钥，因此模型阶段明确记录为本地降级；规则、会话、API 与 WebMCP 均为真实运行。
+测试日期：2026-09-26
+环境：本地 Cloudflare Worker + D1 完成规则、会话、API 与 WebMCP 回归；Sites 生产环境已将 `DEEPSEEK_API_KEY` 作为 Secret 配置并发布环境修订 1。
 
 ## 多轮预算纠正
 
@@ -39,6 +39,8 @@ WebMCP 输入：`我现在已经没有不适，P101 多少钱？有赠品吗`
 
 TypeScript 类型检查、Vinext 生产构建、桌面 1440px、手机 390px、刷新恢复、WebMCP 端到端和浏览器控制台检查均通过。
 
-## 尚待联网验证
+## 真实模型验证
 
-部署环境配置 `DEEPSEEK_API_KEY` 后，需要再执行一次真实 `deepseek-flash` 抽取和 `deepseek-v4-pro` 复杂推理回归，确认审计记录中的 `modelInvoked` 与 `used` 为真。代码路径已实现，本次环境没有可用密钥，未把降级结果冒充模型结果。
+- `deepseek-flash`：使用生产适配器一致的非思考、JSON Output 参数调用成功；最终内容可解析为 JSON，共使用 169 token。
+- `deepseek-v4-pro`：使用思考模式和 `reasoning_effort: high` 调用成功；返回独立 `reasoning_content` 和可解析的最终 JSON，共使用 487 token，其中推理 286 token。
+- Sites 版本 2 已在环境修订 1 上重新部署。自动化环境访问公网域名时被 Cloudflare 拦截为 403，因此生产网页的模型审计仍需在普通浏览器完成一次人工确认；这项限制不影响两种 DeepSeek 模型和密钥本身的联网验证。
