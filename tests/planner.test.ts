@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { buildAgentContext } from "../lib/guide/agent-context";
+import { authorizePlannerAction, runPlannerLoop } from "../lib/guide/planner";
+import { applyDelta, deterministicExtract } from "../lib/guide/state";
+import type { ModelAudit, PlannerAction, SessionRecord, UserState } from "../lib/guide/types";
+
+function context(text: string) {
+  const state = applyDelta({ facts: {}, history: [], turn: 0 } as UserState, deterministicExtract(text));
+  const session: SessionRecord = { id: "s", userId: null, state, inputVersion: 1, appliedInputVersion: 1, stateVersion: 1, result: null };
+  return buildAgentContext({ session });
+}
+
+const audit: ModelAudit = { stage: "planner", model: "fake", modelInvoked: true, parseSuccess: true, schemaSuccess: true, businessAccepted: false, used: false, latencyMs: 1 };
+const action = (name: PlannerAction["action"], args: object): PlannerAction => ({ action: name, arguments: args, evidenceNeeded: "商品事实", expectedProgress: "增加可用证据" } as PlannerAction);
+
+test("planner search automatically runs mandatory safety, eligibility and budget gates", async () => {
+  const choices = [action("search_products", { category: "cleanser" }), action("finalize", {})];
+  const result = await runPlannerLoop(context("我是干皮，预算200，想买洗面奶"), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
+  assert.equal(result.fallbackReason, undefined);
+  assert.equal(result.context.productFits.some((fit) => fit.sku === "P101" && fit.status === "eligible"), true);
+  assert.deepEqual(result.context.observations.slice(0, 4).map((item) => item.tool), ["search_products", "check_safety", "check_eligibility", "check_budget"]);
+  assert.equal(result.context.step, 2);
+});
+
+test("action policy rejects unknown category, unsearched SKU and unsafe finalize", () => {
+  const base = context("想买洗面奶");
+  assert.equal(authorizePlannerAction(action("search_products", { category: "serum" }), base, new Set()).reason, "CATEGORY_OUT_OF_SCOPE");
+  assert.equal(authorizePlannerAction(action("compare_products", { skus: ["P101", "P102"] }), base, new Set()).reason, "ACTION_NOT_ALLOWED");
+  assert.equal(authorizePlannerAction(action("finalize", {}), context("想买洗面奶，脸很疼"), new Set()).reason, "SAFETY_STOP");
+});
+
+test("duplicate search gets one retry then stops without progress", async () => {
+  const choices = [action("search_products", { category: "cleanser" }), action("search_products", { category: "cleanser" }), action("search_products", { category: "cleanser" })];
+  const result = await runPlannerLoop(context("我是干皮，想买洗面奶"), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
+  assert.equal(result.fallbackReason, "NO_PROGRESS");
+  assert.equal(result.trace.filter((item) => item.policy === "rejected").length, 2);
+});
+
+test("planner failure and short remaining budget exit to deterministic fallback", async () => {
+  const unavailable = await runPlannerLoop(context("想买洗面奶"), { async plan() { return { proposal: null, audit: { ...audit, failureReason: "timeout" } }; } }, Date.now() + 40_000);
+  assert.equal(unavailable.fallbackReason, "timeout");
+  const short = await runPlannerLoop(context("想买洗面奶"), { async plan() { throw new Error("must_not_call"); } }, Date.now() + 10_000);
+  assert.equal(short.fallbackReason, "TIME_BUDGET_EXHAUSTED");
+});

@@ -149,6 +149,11 @@ export interface ProductFit {
   tradeoffs: string[];
   allowedClaims: string[];
   evidence: EvidenceItem[];
+  safetyStatus?: "active_risk" | "unclear" | "explicitly_stable" | "not_provided";
+  hardConstraintMatch?: boolean;
+  budgetStatus?: "within" | "unknown" | "over";
+  fitEvidenceIds?: string[];
+  productFactIds?: string[];
 }
 
 export interface EvidenceItem {
@@ -169,7 +174,7 @@ export interface Recommendation {
 }
 
 export interface ModelAudit {
-  stage: "extract" | "reason" | "normalize" | "render" | "render_review";
+  stage: "extract" | "planner" | "reason" | "normalize" | "render" | "render_review";
   model: string;
   modelInvoked: boolean;
   parseSuccess: boolean;
@@ -220,10 +225,11 @@ export interface DecisionResult extends DecisionDraft {
     knowledge: string;
   };
   decisionTrace?: DecisionTrace;
+  agentTrace?: AgentTrace;
 }
 
 export type DecisionToolName = "search_products" | "get_product_detail" | "check_safety" | "check_eligibility" | "check_budget" | "compare_products" | "lookup_policy";
-export interface ToolObservation { order: number; tool: DecisionToolName; outcome: string }
+export interface ToolObservation { order: number; tool: DecisionToolName; outcome: string; data?: unknown }
 export interface DecisionTrace {
   tools: Array<{ tool: DecisionToolName; outcome: string }>;
   eligibility: Array<{ sku: string; status: ProductFit["status"] }>;
@@ -236,12 +242,45 @@ export interface AgentContext {
   userState: Readonly<UserState>;
   habits: { version: number; relevant: ReadonlyArray<HabitMemory> };
   candidateProducts: ReadonlyArray<ProductFit>;
+  rawCandidateSkus: ReadonlyArray<string>;
+  productFits: ReadonlyArray<ProductFit>;
+  rejectedProducts: ReadonlyArray<{ sku: string; reason: string; stage: "safety" | "eligibility" | "hard_constraint" | "budget" }>;
+  hardConstraints: { safety: "active_risk" | "unclear" | "explicitly_stable" | "not_provided"; budgetFen?: number; fragranceFree: boolean };
+  softPreferences: { skinType?: string; fragrance?: string; concern?: string };
+  requiredMissingFields: ReadonlyArray<StateField>;
   currentDecision: DecisionDraft | null;
   completedActions: ReadonlyArray<DecisionToolName>;
   observations: ReadonlyArray<ToolObservation>;
   pendingQuestions: ReadonlyArray<StateField>;
-  allowedActions: ReadonlyArray<"ask_user" | DecisionToolName | "finish">;
-  step: 0;
+  allowedActions: ReadonlyArray<PlannerAction["action"]>;
+  step: number;
+  remainingTimeBudget: number;
+  versions: DecisionResult["versions"];
+}
+
+export type PlannerAction =
+  | { action: "search_products"; arguments: { category: Product["category"] }; evidenceNeeded: string; expectedProgress: string }
+  | { action: "compare_products"; arguments: { skus: string[] }; evidenceNeeded: string; expectedProgress: string }
+  | { action: "finalize"; arguments: Record<string, never>; evidenceNeeded: string; expectedProgress: string };
+
+export type FinalDecisionProposal =
+  | { kind: "recommend"; skus: string[]; evidenceIds: string[]; relation: "single" | "bundle" | "alternatives" }
+  | { kind: "ask"; field: StateField; questionGoal: string; evidenceGap: string }
+  | { kind: "direct"; source: "rule" | "fallback"; reason: string };
+
+export interface FinalAuthorizationResult {
+  status: "APPROVED" | "REJECTED" | "STALE" | "FALLBACK_REQUIRED";
+  reason: string;
+  decision?: DecisionDraft;
+}
+
+export interface AgentTrace {
+  planner: Array<{ step: number; action: string; policy: "allowed" | "rejected"; reason: string }>;
+  observations: Array<{ order: number; tool: DecisionToolName; outcome: string }>;
+  reasonerProposal?: { kind: FinalDecisionProposal["kind"]; skus?: string[]; field?: StateField };
+  authorization: FinalAuthorizationResult["status"];
+  authorizationReason: string;
+  fallbackReason?: string;
   versions: DecisionResult["versions"];
 }
 
