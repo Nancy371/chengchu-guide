@@ -1,10 +1,7 @@
-import { BUNDLES, KNOWLEDGE_VERSION, MANUAL_SOURCE, PRODUCTS, PRODUCTS_BY_SKU, UNSUPPORTED_POLICY_TOPICS } from "./catalog";
+import { BUNDLES, KNOWLEDGE_VERSION, PRODUCTS_BY_SKU } from "./catalog";
 import { fact } from "./state";
-import type { DecisionDraft, EvidenceItem, HabitMemory, ProductFit, Recommendation, StateField, UserState } from "./types";
-
-function evidence(id: string, label: string, detail: string, status: EvidenceItem["status"] = "supported"): EvidenceItem {
-  return { id, label, detail, source: MANUAL_SOURCE, status };
-}
+import { activeCategories, checkBudget, checkEligibility, checkSafety, compareProducts, compileProductFits, getProductDetail, lookupPolicy, memoryValue, searchProducts, toolEvidence as evidence } from "./tools";
+import type { DecisionDraft, HabitMemory, ProductFit, Recommendation, StateField, UserState } from "./types";
 
 function productRecommendation(sku: string, fit?: ProductFit): Recommendation {
   const product = PRODUCTS_BY_SKU[sku];
@@ -18,103 +15,8 @@ function productRecommendation(sku: string, fit?: ProductFit): Recommendation {
   };
 }
 
-function activeCategories(state: UserState): string[] {
-  const categories = fact<string[]>(state, "categories") ?? [];
-  const targetSku = fact<string>(state, "targetSku");
-  if (targetSku && PRODUCTS_BY_SKU[targetSku] && (!categories.length || categories.includes(PRODUCTS_BY_SKU[targetSku].category))) return [PRODUCTS_BY_SKU[targetSku].category];
-  return categories;
-}
-
-function memoryValue<T extends string | boolean>(memories: HabitMemory[], kind: HabitMemory["kind"]): T | undefined {
-  return memories.find((memory) => memory.kind === kind)?.value as T | undefined;
-}
-
-export function compileProductFits(state: UserState, memories: HabitMemory[] = []): ProductFit[] {
-  const categories = activeCategories(state);
-  const skin = fact<string>(state, "skinType");
-  const sensitive = fact<boolean>(state, "sensitiveTendency");
-  const discomfort = fact<boolean | string>(state, "currentDiscomfort");
-  const fragrance = fact<string>(state, "fragrancePreference") ?? memoryValue<string>(memories, "fragrance_preference");
-  const acidExperience = fact<boolean>(state, "acidExperience");
-  const travel = fact<boolean>(state, "travelNeed");
-
-  return PRODUCTS.map((product) => {
-    const matches: string[] = [];
-    const blockers: string[] = [];
-    const missing: string[] = [];
-    const tradeoffs: string[] = [];
-    let score = 0;
-
-    if (categories.length && !categories.includes(product.category)) blockers.push("不属于当前需要的品类");
-    if (discomfort === true) blockers.push("当前明显不适时暂停商品推荐");
-
-    if (product.sku === "P101") {
-      if (skin === "dry") { matches.push("偏干肤质与手册适用提示一致"); score += 30; }
-      if (sensitive === true) { matches.push("敏感倾向且当前稳定时可考虑"); score += 20; }
-      if (fragrance === "must_be_fragrance_free" || fragrance === "fragrance_sensitive") { matches.push("无香型符合香味偏好"); score += 18; }
-    }
-    if (product.sku === "P102") {
-      if (skin === "oily") { matches.push("偏油且偏好清爽时可考虑"); score += 30; }
-      if (fact<string>(state, "coreConcern") === "fresh_texture") { matches.push("清洁感较强，符合清爽诉求"); score += 12; }
-      if (fragrance === "accepts_fragrance") score += 10;
-      if (fragrance === "fragrance_sensitive") { tradeoffs.push("带香味，手册提示对香味敏感者不优先"); score -= 25; }
-      if (fragrance === "must_be_fragrance_free") blockers.push("用户明确要求无香，而本品带香味");
-    }
-    if (product.sku === "P201") {
-      if (sensitive === true) blockers.push("手册明确不推荐敏感皮肤使用 P201");
-      if (discomfort === true || discomfort === "unclear") blockers.push("不适情况未排除，不推荐讨论果酸");
-      if (sensitive === undefined) missing.push("sensitiveTendency");
-      if (discomfort === undefined) missing.push("currentDiscomfort");
-      if (acidExperience === undefined) missing.push("acidExperience");
-      if (acidExperience === false) blockers.push("没有相关果酸使用经验");
-      if (acidExperience === true) { matches.push("已有果酸使用经验"); score += 30; }
-      if (fact<string>(state, "coreConcern") === "roughness") { matches.push("希望改善粗糙与手册适用提示一致"); score += 25; }
-      tradeoffs.push("含 8% 果酸复合成分，使用时需注意防晒");
-    }
-    if (product.sku === "P202") {
-      if (skin === "dry") { matches.push("偏干与保湿提示一致"); score += 28; }
-      if (sensitive === true) { matches.push("屏障脆弱倾向且当前稳定时可考虑"); score += 18; }
-      if (fragrance === "must_be_fragrance_free" || fragrance === "fragrance_sensitive") { matches.push("无香型符合香味偏好"); score += 15; }
-      tradeoffs.push("不作治疗承诺");
-    }
-    if (product.sku === "P203") {
-      if (skin === "oily") { matches.push("偏油且喜欢轻薄肤感时可考虑"); score += 28; }
-      if (fact<string>(state, "coreConcern") === "fresh_texture") { matches.push("清爽质地符合轻薄诉求"); score += 15; }
-      if (fragrance === "accepts_fragrance") score += 8;
-      if (fragrance === "fragrance_sensitive") { tradeoffs.push("带淡香，手册提示对香味敏感者不优先"); score -= 25; }
-      if (fragrance === "must_be_fragrance_free") blockers.push("用户明确要求无香，而本品带淡香");
-    }
-    if (product.sku === "P301") {
-      if (travel === true) { matches.push("旅行携带需求明确"); score += 40; }
-      else blockers.push("仅在旅行携带需求明确时讨论");
-      tradeoffs.push("不属于护肤功效产品");
-    }
-
-    const meaningfulBlockers = blockers.filter((item) => item !== "不属于当前需要的品类");
-    const status = blockers.length ? "excluded" : missing.length ? "needs_information" : "eligible";
-    return {
-      sku: product.sku,
-      status,
-      score,
-      matches,
-      blockers,
-      missing,
-      tradeoffs,
-      allowedClaims: [...product.features, ...product.suitable, ...product.limitations],
-      evidence: [
-        evidence(`catalog:${product.sku}`, `${product.sku} 商品事实`, `${product.name} · ¥${(product.priceFen / 100).toFixed(0)} · ${product.features.join("、")}`),
-        ...(meaningfulBlockers.length ? [evidence(`gate:${product.sku}`, "资格门禁", meaningfulBlockers.join("；"), "contradicted")] : []),
-      ],
-    };
-  });
-}
-
 function questionsFor(fields: StateField[]): StateField[] {
   return [...new Set(fields)].slice(0, 2);
-}
-
-function totalFor(skus: readonly string[]) {
-  return skus.reduce((sum, sku) => sum + PRODUCTS_BY_SKU[sku].priceFen, 0);
 }
 
 function baseDraft(fits: ProductFit[]): DecisionDraft {
@@ -134,7 +36,7 @@ function baseDraft(fits: ProductFit[]): DecisionDraft {
 export function decide(state: UserState, memories: HabitMemory[] = []): DecisionDraft {
   const fits = compileProductFits(state, memories);
   const draft = baseDraft(fits);
-  const discomfort = fact<boolean | string>(state, "currentDiscomfort");
+  const safety = checkSafety({ userState: state });
   const intent = fact<string>(state, "intent");
   const storedSku = fact<string>(state, "targetSku");
   const explicitCategories = fact<string[]>(state, "categories") ?? [];
@@ -145,18 +47,18 @@ export function decide(state: UserState, memories: HabitMemory[] = []): Decision
   const skin = fact<string>(state, "skinType");
   const fragrance = fact<string>(state, "fragrancePreference") ?? memoryValue<string>(memories, "fragrance_preference");
 
-  if (discomfort === true) {
+  if (safety.status === "active_risk") {
     return {
       ...draft,
       action: "safety",
       route: "safety",
       routeReason: "检测到当前明显不适或受损信息",
-      evidence: [evidence("safety:discomfort", "安全边界", "明显不适、受损或持续问题时，停止刺激性尝试并建议咨询专业人士")],
+      evidence: safety.evidence,
       limitations: ["不作医疗诊断", "本轮不生成商品推荐"],
     };
   }
 
-  if (discomfort === "unclear") {
+  if (safety.status === "unclear") {
     return {
       ...draft,
       route: "reasoning",
@@ -167,18 +69,20 @@ export function decide(state: UserState, memories: HabitMemory[] = []): Decision
   }
 
   if (policyTopics.length) {
-    const labels = policyTopics.map((topic) => UNSUPPORTED_POLICY_TOPICS[topic] ?? topic);
-    const policyEvidence = labels.map((label, index) => evidence(`policy:${policyTopics[index]}`, `${label}政策`, "品牌手册未提供，需要向门店或系统确认", "unknown"));
-    if (targetSku && PRODUCTS_BY_SKU[targetSku]) {
-      const product = PRODUCTS_BY_SKU[targetSku];
-      return { ...draft, action: "policy_unknown", routeReason: "价格有手册依据，政策问题局部待确认", candidateSkus: [targetSku], recommendations: [productRecommendation(targetSku, fits.find((fit) => fit.sku === targetSku))], evidence: [...policyEvidence, evidence(`price:${targetSku}`, `${targetSku} 手册标价`, `¥${product.priceFen / 100}`)], limitations: labels.map((label) => `${label}需要人工确认`) };
+    const policies = lookupPolicy({ topics: policyTopics });
+    const labels = policies.items.map((item) => item.label);
+    const policyEvidence = policies.items.map((item) => item.evidence);
+    const product = targetSku ? getProductDetail({ sku: targetSku }).product : null;
+    if (product) {
+      return { ...draft, action: "policy_unknown", routeReason: "价格有手册依据，政策问题局部待确认", candidateSkus: [product.sku], recommendations: [productRecommendation(product.sku, fits.find((fit) => fit.sku === product.sku))], evidence: [...policyEvidence, evidence(`price:${product.sku}`, `${product.sku} 手册标价`, `¥${product.priceFen / 100}`)], limitations: labels.map((label) => `${label}需要人工确认`) };
     }
     return { ...draft, action: "policy_unknown", routeReason: "手册未覆盖所问政策", evidence: policyEvidence, limitations: labels.map((label) => `${label}需要人工确认`) };
   }
 
-  if (targetSku && PRODUCTS_BY_SKU[targetSku] && intent === "price") {
-    const product = PRODUCTS_BY_SKU[targetSku];
-    return { ...draft, action: "price_answer", routeReason: "用户询问手册中明确的商品价格", candidateSkus: [targetSku], recommendations: [productRecommendation(targetSku, fits.find((fit) => fit.sku === targetSku))], evidence: [evidence(`price:${targetSku}`, `${targetSku} 手册标价`, `¥${product.priceFen / 100}`)] };
+  const priceProduct = targetSku ? getProductDetail({ sku: targetSku }).product : null;
+  if (priceProduct && intent === "price") {
+    const product = priceProduct;
+    return { ...draft, action: "price_answer", routeReason: "用户询问手册中明确的商品价格", candidateSkus: [product.sku], recommendations: [productRecommendation(product.sku, fits.find((fit) => fit.sku === product.sku))], evidence: [evidence(`price:${product.sku}`, `${product.sku} 手册标价`, `¥${product.priceFen / 100}`)] };
   }
 
   if (!categories.length) {
@@ -186,7 +90,7 @@ export function decide(state: UserState, memories: HabitMemory[] = []): Decision
   }
 
   if (budget !== undefined && categories.length === 1) {
-    const products = PRODUCTS.filter((product) => product.category === categories[0]);
+    const products = searchProducts({ category: categories[0] as "cleanser" | "serum" | "moisturizer" | "travel" }).products;
     const minimum = Math.min(...products.map((product) => product.priceFen));
     if (Number.isFinite(minimum) && budget < minimum) {
       return {
@@ -211,7 +115,12 @@ export function decide(state: UserState, memories: HabitMemory[] = []): Decision
     if (!bundle) {
       return { ...draft, route: skin === "oily" && fragrance === "must_be_fragrance_free" ? "reasoning" : "direct", routeReason: "当前偏好没有完全匹配的手册组合", questionFields: questionsFor(["fragrancePreference", "coreConcern"]), limitations: ["不会为了凑套装放宽无香要求"] };
     }
-    const totalFen = totalFor(bundle);
+    const eligibility = checkEligibility({ skus: bundle, userState: state, memories });
+    if (eligibility.rejected.length || eligibility.needsInformation.length) {
+      return { ...draft, action: "unavailable", routeReason: "组合中存在未通过资格门禁的商品", limitations: eligibility.rejected.flatMap((item) => item.reasons) };
+    }
+    const budgetCheck = checkBudget({ skus: bundle, budgetFen: budget, mode: "bundle" });
+    const totalFen = budgetCheck.totalFen!;
     if (budget < totalFen) {
       return { ...draft, action: "budget_conflict", routeReason: "确定性算价显示组合超过预算", candidateSkus: [...bundle], recommendations: bundle.map((sku) => productRecommendation(sku, fits.find((fit) => fit.sku === sku))), evidence: [evidence(`bundle:${bundle.join("+")}`, "组合算价", bundle.map((sku) => `${sku} ¥${PRODUCTS_BY_SKU[sku].priceFen / 100}`).join(" + ") + ` = ¥${totalFen / 100}`)], totalFen, budgetGapFen: totalFen - budget, pricingMode: "bundle" };
     }
@@ -219,25 +128,32 @@ export function decide(state: UserState, memories: HabitMemory[] = []): Decision
   }
 
   if (categories.includes("serum")) {
-    const fit = fits.find((item) => item.sku === "P201")!;
+    const fit = checkEligibility({ skus: ["P201"], userState: state, memories }).fits[0];
     if (fit.status === "excluded") return { ...draft, action: "unavailable", routeReason: "P201 未通过安全或经验门槛", evidence: fit.evidence, limitations: fit.blockers };
     if (fit.status === "needs_information") return { ...draft, questionFields: questionsFor(fit.missing as StateField[]), routeReason: "讨论果酸前需确认使用经验与皮肤状态", evidence: fit.evidence };
-    return { ...draft, action: "recommend", routeReason: "P201 满足使用经验和当前状态条件", candidateSkus: ["P201"], recommendations: [productRecommendation("P201", fit)], evidence: fit.evidence, totalFen: PRODUCTS_BY_SKU.P201.priceFen, pricingMode: "single" };
+    const quote = checkBudget({ skus: ["P201"], budgetFen: budget, mode: "single" });
+    if (quote.withinBudget === false) return { ...draft, action: "budget_conflict", routeReason: "P201 手册标价超过预算", evidence: [evidence("price:P201", "P201 手册标价", `¥${quote.totalFen! / 100}`)], totalFen: quote.totalFen, budgetGapFen: quote.budgetGapFen, pricingMode: "single" };
+    return { ...draft, action: "recommend", routeReason: "P201 满足使用经验和当前状态条件", candidateSkus: ["P201"], recommendations: [productRecommendation("P201", fit)], evidence: fit.evidence, totalFen: quote.totalFen, pricingMode: "single" };
   }
 
   if (categories.includes("travel")) {
-    const fit = fits.find((item) => item.sku === "P301")!;
-    return { ...draft, action: "recommend", routeReason: "旅行携带需求明确", candidateSkus: ["P301"], recommendations: [productRecommendation("P301", fit)], evidence: fit.evidence, totalFen: PRODUCTS_BY_SKU.P301.priceFen, pricingMode: "single" };
+    const fit = checkEligibility({ skus: ["P301"], userState: state, memories }).fits[0];
+    const quote = checkBudget({ skus: ["P301"], budgetFen: budget, mode: "single" });
+    if (quote.withinBudget === false) return { ...draft, action: "budget_conflict", routeReason: "旅行用品手册标价超过预算", evidence: [evidence("price:P301", "P301 手册标价", `¥${quote.totalFen! / 100}`)], totalFen: quote.totalFen, budgetGapFen: quote.budgetGapFen, pricingMode: "single" };
+    return { ...draft, action: "recommend", routeReason: "旅行携带需求明确", candidateSkus: ["P301"], recommendations: [productRecommendation("P301", fit)], evidence: fit.evidence, totalFen: quote.totalFen, pricingMode: "single" };
   }
 
   const category = categories[0] as "cleanser" | "moisturizer";
   if (!skin) return { ...draft, questionFields: ["skinType"], routeReason: "肤质会改变当前品类的优先候选" };
   if (skin === "oily" && fragrance === undefined) return { ...draft, questionFields: ["fragrancePreference"], routeReason: "偏油候选带香，需要确认香味偏好" };
 
-  const eligible = fits.filter((fit) => PRODUCTS_BY_SKU[fit.sku].category === category && fit.status === "eligible" && (budget === undefined || PRODUCTS_BY_SKU[fit.sku].priceFen <= budget)).sort((a, b) => b.score - a.score || PRODUCTS_BY_SKU[a.sku].priceFen - PRODUCTS_BY_SKU[b.sku].priceFen);
+  const categorySkus = searchProducts({ category }).products.map((product) => product.sku);
+  const eligible = checkEligibility({ skus: categorySkus, userState: state, memories }).fits.filter((fit) => fit.status === "eligible" && checkBudget({ skus: [fit.sku], budgetFen: budget, mode: "single" }).withinBudget !== false).sort((a, b) => b.score - a.score || PRODUCTS_BY_SKU[a.sku].priceFen - PRODUCTS_BY_SKU[b.sku].priceFen);
   if (!eligible.length) return { ...draft, action: "unavailable", routeReason: "当前硬约束下没有完全匹配的候选", limitations: ["不会把未获手册支持的适用性补成推荐"] };
   const selected = eligible.slice(0, 2);
-  return { ...draft, action: "recommend", routeReason: "候选已通过资格门禁并按明确偏好排序", candidateSkus: selected.map((item) => item.sku), recommendations: selected.map((fit) => productRecommendation(fit.sku, fit)), evidence: selected.flatMap((fit) => fit.evidence), ...(selected.length === 1 ? { totalFen: PRODUCTS_BY_SKU[selected[0].sku].priceFen, pricingMode: "single" as const } : { pricingMode: "alternatives" as const }) };
+  const compared = compareProducts({ skus: selected.map((item) => item.sku), fits });
+  const quote = checkBudget({ skus: selected.map((item) => item.sku), budgetFen: budget, mode: selected.length === 1 ? "single" : "alternatives" });
+  return { ...draft, action: "recommend", routeReason: "候选已通过资格门禁并按明确偏好排序", candidateSkus: compared.items.map((item) => item.product.sku), recommendations: selected.map((fit) => productRecommendation(fit.sku, fit)), evidence: selected.flatMap((fit) => fit.evidence), ...(selected.length === 1 ? { totalFen: quote.totalFen, pricingMode: "single" as const } : { pricingMode: "alternatives" as const }) };
 }
 
 export function applyReasoningProposal(draft: DecisionDraft, proposal: unknown, state?: UserState): DecisionDraft {
