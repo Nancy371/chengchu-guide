@@ -33,7 +33,7 @@ export class ConversationRuntime {
       if (!checkpoint) {
         const current = await this.repository.getSession(sessionId, userId);
         const fallback = current?.result ?? composeResult({
-          action: "unavailable", route: "degraded", routeReason: "检测到更新的用户输入，本轮迟到结果已丢弃", questionFields: [], candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: ["请以最新一轮回复为准"],
+          action: "unavailable", route: "degraded", routeReason: "检测到更新的用户输入，本轮迟到结果已丢弃", questionFields: [], candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: ["前一条结果已经过期，以最新回复为准"],
         }, current?.state ?? state, audits, { input: current?.inputVersion ?? begin.session.inputVersion, state: current?.stateVersion ?? begin.session.stateVersion, knowledge: KNOWLEDGE_VERSION }, {
           signals: understanding.signals,
           lifestyle: understanding.lifestyle,
@@ -98,7 +98,7 @@ export class ConversationRuntime {
       const committed = await this.repository.commitResult(sessionId, requestId, checkpoint.inputVersion, checkpoint.stateVersion, result);
       if (!committed) {
         const current = await this.repository.getSession(sessionId, userId);
-        const fallback = current?.result ?? { ...result, action: "unavailable" as const, route: "degraded" as const, routeReason: "出现更新的用户输入，本轮结果已失效", reply: "我收到了更新的信息，正在以最新内容重新判断。请以最新一轮回复为准。", recommendations: [] };
+        const fallback = current?.result ?? { ...result, action: "unavailable" as const, route: "degraded" as const, routeReason: "出现更新的用户输入，本轮结果已失效", reply: "看到你刚补充的信息了，我会按最新内容重新判断。前一条建议先别看，以接下来的回复为准。", recommendations: [] };
         return { result: fallback, duplicate: false, stale: true };
       }
 

@@ -21,7 +21,7 @@ test("a ¥100 cleanser request reports no budget candidate without irrelevant qu
   assert.deepEqual(draft.recommendations, []);
   const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], updatedFields: ["budget", "categories"] });
   assert.deepEqual(plan.policy.selectedQuestionFields, []);
-  assert.match(renderTemplate(plan, []).reply, /没有预算内候选/);
+  assert.match(renderTemplate(plan, []).reply, /没有预算内的选择/);
 });
 
 test("a low budget is not treated as an emotion", () => {
@@ -37,7 +37,9 @@ test("explicit frustration is acknowledged before narrowing the task", () => {
   const plan = planConversation({ draft, state, signals: understanding.signals, lifestyle: understanding.lifestyle, memories: [], updatedFields: understanding.delta.updates.map((item) => item.field) });
   assert.equal(plan.policy.userEmotion, "frustrated");
   assert.equal(plan.policy.behaviorSkills.includes("emotion_acknowledgement"), true);
-  assert.match(renderTemplate(plan, understanding.signals).reply, /容易累/);
+  const reply = renderTemplate(plan, understanding.signals).reply;
+  assert.match(reply, /耗神|范围收小/);
+  assert.doesNotMatch(reply, /根据您的需求|请问您|为了更好地|我理解你的心情/);
   assert.equal(plan.policy.selectedQuestionFields.length <= 1, true);
 });
 
@@ -50,6 +52,21 @@ test("explicit rejection closes without recommendation or follow-up", () => {
   assert.equal(plan.policy.nextAction, "close");
   assert.deepEqual(plan.policy.selectedQuestionFields, []);
   assert.equal(plan.policy.behaviorSkills.includes("respectful_close"), true);
+});
+
+test("‘算了，还是看保湿’ changes direction instead of closing the conversation", () => {
+  const first = stateFrom("我想看洁面");
+  const text = "算了，还是只看保湿吧，我不想加太多步骤";
+  const understanding = deterministicUnderstand(text);
+  const state = applyDelta(first, understanding.delta);
+  const draft = decide(state);
+  const plan = planConversation({ draft, state, signals: understanding.signals, lifestyle: understanding.lifestyle, memories: [], updatedFields: understanding.delta.updates.map((item) => item.field) });
+
+  assert.notEqual(plan.policy.nextAction, "close");
+  assert.equal(understanding.signals.some((item) => item.value === "reject"), false);
+  assert.equal(understanding.signals.some((item) => item.value === "correction"), true);
+  assert.match(renderTemplate(plan, understanding.signals).reply, /滋润和清爽/);
+  assert.doesNotMatch(renderTemplate(plan, understanding.signals).reply, /影响洁面的选择/);
 });
 
 test("transient online-price intent does not leak into the next turn", () => {
@@ -87,12 +104,34 @@ test("the renderer cannot inject SKU, prices, promises or extra questions", () =
   }, plan), null);
 });
 
+test("the renderer rejects robotic phrasing and stacked questions", () => {
+  const state = stateFrom("想买洗面奶");
+  const draft = decide(state);
+  const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], updatedFields: ["categories"] });
+  const field = plan.policy.selectedQuestionFields[0];
+  assert.ok(field);
+  assert.equal(validateRenderProposal({
+    acknowledgement: "",
+    blockIds: plan.factBlocks.map((item) => item.id),
+    questions: [{ field, text: "请问您是什么肤质？平时会敏感吗？" }],
+    closing: "",
+  }, plan), null);
+});
+
 test("a previously asked optional field is not immediately repeated", () => {
   const state = stateFrom("偏油，想买洗面奶");
   const draft = decide(state);
   const previousResult = { questionFields: ["fragrancePreference"] } as DecisionResult;
   const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], previousResult, updatedFields: [] });
   assert.deepEqual(plan.policy.selectedQuestionFields, []);
+});
+
+test("a changed product category can reframe a still-critical question", () => {
+  const state = stateFrom("想买保湿，步骤越少越好");
+  const draft = decide(state);
+  const previousResult = { questionFields: ["skinType"] } as DecisionResult;
+  const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], previousResult, updatedFields: ["categories"] });
+  assert.deepEqual(plan.policy.selectedQuestionFields, ["skinType"]);
 });
 
 test("durable habits are explicit, self-owned, and do not include temporary travel", () => {

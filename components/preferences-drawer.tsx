@@ -46,7 +46,7 @@ export function PreferencesDrawer() {
   async function load() {
     const request = await fetch("/api/preferences", { cache: "no-store" });
     const data = await request.json() as MemoryProfile & { error?: string };
-    if (!request.ok) throw new Error(data.error ?? "暂时无法读取偏好。");
+    if (!request.ok) throw new Error(data.error ?? "刚才没能读到你的偏好。");
     setProfile(data);
   }
 
@@ -67,10 +67,10 @@ export function PreferencesDrawer() {
         body: JSON.stringify(body),
       });
       const data = await request.json() as MemoryProfile & { error?: string };
-      if (!request.ok) throw new Error(data.error ?? "暂时无法更新偏好。");
+      if (!request.ok) throw new Error(data.error ?? "刚才没能保存这项修改。");
       setProfile(data);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "暂时无法更新偏好。");
+      setError(cause instanceof Error ? cause.message : "刚才没能保存这项修改。");
       if (method !== "PATCH") await load().catch(() => undefined);
     } finally {
       setBusy(false);
@@ -93,13 +93,13 @@ export function PreferencesDrawer() {
       <SheetContent className="preferences-sheet sm:max-w-[480px]">
         <SheetHeader className="preferences-header">
           <SheetTitle>我的偏好</SheetTitle>
-          <SheetDescription>登录后可在不同设备沿用明确保存的生活偏好。商品、安全和预算仍以本轮输入为准。</SheetDescription>
+          <SheetDescription>登录后，可以在不同设备沿用你明确保存的习惯。商品、安全和预算仍以这次聊天为准。</SheetDescription>
         </SheetHeader>
         <div className="preferences-body">
           {!profile.authenticated ? (
             <div className="signin-panel">
-              <h3>跨设备记忆需要登录</h3>
-              <p>匿名使用仍支持完整导购。登录不会自动开启记忆。</p>
+              <h3>登录后才能跨设备记住习惯</h3>
+              <p>不登录也能正常咨询。登录以后，记忆也不会自动开启。</p>
               <Button asChild><a href="/signin-with-chatgpt?return_to=%2F" target="_top"><LogIn aria-hidden="true" /> 使用 ChatGPT 登录</a></Button>
             </div>
           ) : (
@@ -110,11 +110,11 @@ export function PreferencesDrawer() {
               </div>
               <div className="memory-consent">
                 <div>
-                  <strong>跨设备记住我的习惯</strong>
-                  <p>开启后，只保存你随后明确说出的允许项，90 天后自动过期。不会保存情绪、不适、病史、预算或行程。</p>
+                  <strong>在不同设备记住我的习惯</strong>
+                  <p>开启后，只保存你之后明确说出的允许项，90 天后自动过期。情绪、不适、病史、预算和行程都不会保存。</p>
                 </div>
                 <Switch
-                  aria-label="跨设备记住我的习惯"
+                  aria-label="在不同设备记住我的习惯"
                   checked={profile.enabled}
                   disabled={busy}
                   onCheckedChange={(enabled) => void mutate("PUT", { enabled, expectedVersion: profile.version })}
@@ -134,11 +134,11 @@ export function PreferencesDrawer() {
                       </Select>
                       <Button size="icon" variant="ghost" aria-label={"删除" + kindLabels[memory.kind]} disabled={busy} onClick={() => void mutate("DELETE", { id: memory.id })}><Trash2 /></Button>
                     </div>
-                  )) : <p className="memory-empty">还没有保存的偏好。开启之后，在咨询中明确说“我喜欢无香”或“我经常出差”等，相关项才会保存。</p>}
+                  )) : <p className="memory-empty">还没有保存的偏好。开启后，只有你明确说出“我喜欢无香”或“我经常出差”这类习惯时，我才会记下来。</p>}
                   <button className="disable-memory" disabled={busy} onClick={() => void mutate("DELETE", { disable: true, expectedVersion: profile.version })}>关闭并清除记忆</button>
                 </div>
               ) : (
-                <p className="memory-off">记忆目前关闭。新的生活偏好只用于当前会话。</p>
+                <p className="memory-off">记忆现在是关着的。你提到的生活偏好只会用于这次聊天。</p>
               )}
             </>
           )}

@@ -95,6 +95,12 @@ function signal(kind: SignalKind, value: SignalValue, quote: string, subject: Tu
   return { kind, value, quote, subject, explicit, temporal };
 }
 
+function isExplicitRejection(text: string) {
+  if (/不要了|不买了|别推荐|不用推荐|不想买|先不买/.test(text)) return true;
+  if (!/算了/.test(text)) return false;
+  return !/(?:还是|改成|改为|只看|看看|想看|想买|推荐|洁面|洗面奶|保湿|面霜|乳液|精华|分装)/.test(text);
+}
+
 export function deterministicUnderstand(text: string): TurnUnderstanding {
   const raw = text.trim();
   const compact = raw.replace(/\s+/g, "");
@@ -108,8 +114,8 @@ export function deterministicUnderstand(text: string): TurnUnderstanding {
   if (/纠结|犹豫|拿不定|不知道选哪/.test(compact)) signals.push(signal("emotion", "hesitant", raw, subject, true, historicalEmotion ? "historical" : "current"));
   if (/太好了|正合适|很开心|就要这个/.test(compact)) signals.push(signal("emotion", "happy", raw, subject, true, historicalEmotion ? "historical" : "current"));
   if (/(?:网上|线上|淘宝|京东|拼多多).*(?:便宜|低)|为什么.*贵|差价/.test(compact)) signals.push(signal("communication", "price_objection", raw, subject));
-  if (/算了|不要了|不买了|别推荐|不用推荐|不想买|先不买/.test(compact)) signals.push(signal("communication", "reject", raw, subject));
-  if (/你理解错|不是这个意思|我说错了|改成|改为|其实是/.test(compact)) signals.push(signal("communication", "correction", raw, subject));
+  if (isExplicitRejection(compact)) signals.push(signal("communication", "reject", raw, subject));
+  if (/你理解错|不是这个意思|我说错了|改成|改为|其实是|算了.*还是/.test(compact)) signals.push(signal("communication", "correction", raw, subject));
   if (/赶时间|快一点|直接说|先说结论|别问太多/.test(compact)) signals.push(signal("communication", "hurry", raw, subject));
   if (/直接推荐|直接告诉我|给个结论/.test(compact)) signals.push(signal("communication", "direct_answer", raw, subject));
   if (/早上.*赶|早晨.*赶|赶着上班/.test(compact)) signals.push(signal("lifestyle", "morning_rush", raw, subject));
@@ -156,6 +162,7 @@ export function validateUnderstanding(value: unknown, text: string): TurnUnderst
     if (!item || typeof item !== "object") return [];
     const candidate = item as Partial<TurnSignal>;
     if (!candidate.kind || !signalKinds.has(candidate.kind) || !candidate.value || !signalValues.has(candidate.value) || typeof candidate.quote !== "string" || !candidate.quote || !text.includes(candidate.quote)) return [];
+    if (candidate.value === "reject" && !isExplicitRejection(text.replace(/\s+/g, ""))) return [];
     return [{ kind: candidate.kind, value: candidate.value, quote: candidate.quote, explicit: candidate.explicit !== false, subject: candidate.subject === "other" ? "other" : candidate.subject === "unknown" ? "unknown" : "self", temporal: candidate.temporal === "historical" ? "historical" : candidate.temporal === "unclear" ? "unclear" : "current" }];
   }) : [];
   const lifestyle = Array.isArray(raw.lifestyle) ? raw.lifestyle.flatMap((item): LifestyleObservation[] => {
@@ -180,7 +187,10 @@ export function mergeUnderstanding(primary: TurnUnderstanding | null, fallback: 
 export function mergeDeltas(primary: StateDelta | null, fallback: StateDelta): StateDelta {
   if (!primary) return fallback;
   const byField = new Map(primary.updates.map((item) => [item.field, item]));
-  for (const item of fallback.updates) if (!byField.has(item.field)) byField.set(item.field, item);
+  // A deterministic match is the locally verified interpretation of the user's
+  // literal wording. The model may fill gaps, but it cannot overwrite that fact
+  // with a stale value inferred from prior context.
+  for (const item of fallback.updates) byField.set(item.field, item);
   return { updates: [...byField.values()], extraction: primary.extraction, warnings: primary.warnings };
 }
 

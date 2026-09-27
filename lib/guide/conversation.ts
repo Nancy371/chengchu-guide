@@ -39,15 +39,31 @@ export interface RenderedCopy {
 }
 
 const questionCopy: Partial<Record<StateField, string>> = {
-  categories: "这次主要想看洁面、保湿、精华，还是旅行分装？",
-  budget: "如果考虑组合，总预算大约想控制在多少？",
-  skinType: "你洗完脸更容易觉得紧绷，还是比较容易出油？这个会直接影响洁面的选择。",
-  fragrancePreference: "你能接受带香味的产品，还是更希望无香？",
-  currentDiscomfort: "这种不舒服现在还在发生吗，有没有明显刺痛、疼痛或受损？",
-  sensitiveTendency: "皮肤平时有敏感倾向，或者目前有受损情况吗？",
-  acidExperience: "以前用过果酸或类似焕肤产品吗？",
-  coreConcern: "如果需要取舍，你更在意清爽肤感、无香，还是控制预算？",
+  categories: "这次最想先解决哪一件：洁面、保湿、精华，还是旅行分装？",
+  budget: "如果要搭配着买，你希望总价大概控制在多少？我会按这个范围做取舍。",
+  fragrancePreference: "香味这件事你在意吗？是可以接受，还是更想要无香的？",
+  currentDiscomfort: "我先确认一下安全问题：现在还有刺痛、疼痛或破损吗？",
+  sensitiveTendency: "你的皮肤平时容易敏感吗？现在如果有破损或不舒服，也一起告诉我。",
+  acidExperience: "之前用过果酸或类似的焕肤产品吗？这个会影响我能不能继续推荐。",
+  coreConcern: "真要做取舍时，你最想保住哪一点：清爽肤感、无香，还是价格？",
 };
+
+function questionFor(field: StateField, state: UserState) {
+  if (field !== "skinType") return questionCopy[field] ?? "还差一条会影响选择的信息，你愿意时再告诉我就好。";
+  const categories = fact<string[]>(state, "categories") ?? [];
+  if (categories.includes("moisturizer")) return "平时皮肤更容易干，还是容易出油？这会影响我在滋润和清爽之间怎么选。";
+  if (categories.includes("serum")) return "平时皮肤更偏干、偏油，还是容易敏感？这会影响这款精华能不能继续考虑。";
+  return "平时洗完脸，你更常觉得紧绷，还是过一会儿容易出油？这个差别会直接影响洁面的选择。";
+}
+
+export const conversationLanguageRules = [
+  "先回应用户这一轮明确说到的处境或感受，再推进购买问题；情绪不明确时只回应处境，不替用户贴标签。",
+  "承接只用一句，落到用户原话里的具体处境，不说空泛的‘我理解你的心情’。",
+  "追问要像当面聊天：一次只问一个购买决定，并顺手说明它为什么会影响选择。",
+  "不用‘根据您的需求’‘请问您’‘为了更好地为您服务’‘亲’等客服或表单语言。",
+  "不虚构自己的购物或护肤经历，不装熟，不使用催单、制造焦虑或过度热情的表达。",
+  "保留事实的范围、条件和不确定性；自然表达不能改写价格、功效、安全边界或政策缺口。",
+] as const;
 
 export function formatMoney(fen: number) {
   return `¥${(fen / 100).toFixed(fen % 100 ? 2 : 0)}`;
@@ -114,14 +130,14 @@ function acknowledgedEmotion(signals: TurnSignal[], draft: DecisionDraft): Conve
 }
 
 function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
-  if (draft.action === "safety") return [{ id: "safety", text: "先暂停新的或刺激性护理尝试；如果疼痛、受损或不适持续，建议尽快咨询专业人士。我这里先不继续推荐商品，也不作医疗诊断。" }];
-  if (draft.action === "close") return [{ id: "close", text: "好，那这次先不继续推荐，也不用急着做决定。" }];
+  if (draft.action === "safety") return [{ id: "safety", text: "先别继续试新的或刺激性护理；如果疼痛、破损或不适一直没有缓解，建议尽快咨询专业人士。这一轮我先不推荐商品，也不作医疗诊断。" }];
+  if (draft.action === "close") return [{ id: "close", text: "好，那这次就先停在这里。什么时候想再看看再来，不急。" }];
   if (draft.action === "policy_unknown") {
     const topics = fact<string[]>(state, "policyTopics") ?? [];
     const targetSku = fact<string>(state, "targetSku");
     const blocks: FactBlock[] = [];
     if (targetSku && PRODUCTS_BY_SKU[targetSku]) blocks.push({ id: `price:${targetSku}`, text: `手册中 ${targetSku} 的标价是 ${formatMoney(PRODUCTS_BY_SKU[targetSku].priceFen)}。` });
-    blocks.push({ id: "policy-limit", text: `${topics.map((topic) => UNSUPPORTED_POLICY_TOPICS[topic] ?? topic).join("、")}在品牌手册中没有说明，需要向门店或系统确认，我不会替门店作承诺。` });
+    blocks.push({ id: "policy-limit", text: `品牌手册里没有写明${topics.map((topic) => UNSUPPORTED_POLICY_TOPICS[topic] ?? topic).join("、")}，这点得请门店或系统确认，我不替他们猜。` });
     return blocks;
   }
   if (draft.action === "price_answer") {
@@ -133,39 +149,41 @@ function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
     const budget = fact<number>(state, "budget") ?? 0;
     if (draft.pricingMode === "single" && !draft.recommendations.length) {
       const prices = draft.evidence.filter((item) => item.id.startsWith("price:")).map((item) => `${item.label.replace(" 手册标价", "")} ${item.detail}`).join("、");
-      return [{ id: "budget-single", text: `你想把预算控制在 ${formatMoney(budget)} 左右。手册里的相关商品标价是 ${prices}，目前没有预算内候选，先不用为了买而提高预算。` }];
+      return [{ id: "budget-single", text: `你想把预算控制在 ${formatMoney(budget)} 左右。手册里的相关商品标价是 ${prices}，目前没有预算内的选择，不用为了买而硬加预算。` }];
     }
-    return [{ id: "budget-bundle", text: `这套组合合计 ${formatMoney(draft.totalFen ?? 0)}，比目前的 ${formatMoney(budget)} 预算高 ${formatMoney(draft.budgetGapFen ?? 0)}，不能算作预算内方案。` }];
+    return [{ id: "budget-bundle", text: `这套搭配合计 ${formatMoney(draft.totalFen ?? 0)}，比你的 ${formatMoney(budget)} 预算高 ${formatMoney(draft.budgetGapFen ?? 0)}，所以不能把它算成预算内方案。` }];
   }
-  if (draft.action === "unavailable") return [{ id: "unavailable", text: `按目前确认的信息，不建议直接推荐现有候选。${draft.limitations.length ? `主要原因是：${draft.limitations.join("；")}。` : ""}` }];
+  if (draft.action === "unavailable") return [{ id: "unavailable", text: `照你现在说的情况，现有商品里还没有适合直接推荐的。${draft.limitations.length ? `卡在这里：${draft.limitations.join("；")}。` : ""}` }];
   if (draft.action === "recommend") {
     if (draft.pricingMode === "alternatives") {
-      return [{ id: "recommend-alternatives", text: `目前可以比较 ${draft.recommendations.map((item) => `${item.sku} ${item.name}（${formatMoney(item.priceFen)}）`).join("和")}。它们是备选项，不是需要一起购买的组合。` }];
+      return [{ id: "recommend-alternatives", text: `现在可以从 ${draft.recommendations.map((item) => `${item.sku} ${item.name}（${formatMoney(item.priceFen)}）`).join("和")} 里选一个。它们是两个备选，不用一起买。` }];
     }
     const names = draft.recommendations.map((item) => `${item.sku} ${item.name}`).join("＋");
     const amount = draft.totalFen ? `，合计 ${formatMoney(draft.totalFen)}` : "";
     const reason = draft.recommendations.flatMap((item) => item.reasons).slice(0, 2).join("；");
     const tradeoff = draft.recommendations.flatMap((item) => item.tradeoffs).slice(0, 2).join("；");
     return [
-      { id: "recommendation", text: `可以考虑 ${names}${amount}。${reason ? `理由是：${reason}。` : ""}` },
-      ...(tradeoff ? [{ id: "tradeoff", text: `需要留意：${tradeoff}。` }] : []),
-      { id: "no-pressure", text: "可以按自己的偏好决定，不需要为了凑套装增加购买。" },
+      { id: "recommendation", text: `按你现在说的情况，我会先看 ${names}${amount}。${reason ? `主要因为：${reason}。` : ""}` },
+      ...(tradeoff ? [{ id: "tradeoff", text: `不过有一点要留意：${tradeoff}。` }] : []),
+      { id: "no-pressure", text: "按你真正需要的买就好，不用为了凑一套多加东西。" },
     ];
   }
   return [];
 }
 
 function acknowledgementFor(policy: ConversationPolicy, signals: TurnSignal[]) {
-  if (policy.taskSkill === "conversation_repair") return "是我前面理解偏了，按你刚补充的信息重新看。";
-  if (policy.taskSkill === "price_objection") return "有差价的话，认真比较很合理。";
-  if (policy.userEmotion === "frustrated") return "选来选去确实容易累，我们把选择收窄一点。";
-  if (policy.userEmotion === "worried") return "有这个顾虑很正常，我们先把会影响安全和选择的部分确认清楚。";
-  if (policy.userEmotion === "hesitant") return "几个选择放在一起时，确实容易拿不准。";
-  if (policy.userEmotion === "happy") return "好，那方向就清楚了。";
-  if (policy.behaviorSkills.includes("routine_fit")) return "那就按省步骤来选。";
-  if (policy.behaviorSkills.includes("occasion_fit") && hasSignal(signals, "morning_rush")) return "早上赶时间的话，我们尽量说得直接一点。";
-  if (policy.behaviorSkills.includes("existing_routine_respect")) return "已有的先用好就行，这次只补真正缺的。";
-  if (policy.behaviorSkills.includes("gentle_recall") && policy.usedMemory) return "这次也会把你之前保存的偏好算进去；如果变了，直接告诉我就好。";
+  if (policy.userEmotion === "discomfort") return "听起来现在脸不太舒服。";
+  if (policy.taskSkill === "conversation_repair" && policy.behaviorSkills.includes("routine_fit")) return "刚才是我听偏了。这次按你新说的方向来，也尽量少加步骤。";
+  if (policy.taskSkill === "conversation_repair") return "刚才是我听偏了，按你新补充的情况重新看。";
+  if (policy.taskSkill === "price_objection") return "差价摆在这儿，想问清楚很正常。";
+  if (policy.userEmotion === "frustrated") return "看了半天还拿不定，确实挺耗神。我们先把范围收小。";
+  if (policy.userEmotion === "worried") return "这个顾虑得先说清楚，免得买回去不合适。";
+  if (policy.userEmotion === "hesitant") return "这几个放在一起确实不太好选，我帮你把差别压到最关键的一点。";
+  if (policy.userEmotion === "happy") return "好，这下方向清楚多了。";
+  if (policy.behaviorSkills.includes("routine_fit")) return "那就按简单省事来，不给你添步骤。";
+  if (policy.behaviorSkills.includes("occasion_fit") && hasSignal(signals, "morning_rush")) return "早上时间紧，我们就挑关键的说。";
+  if (policy.behaviorSkills.includes("existing_routine_respect")) return "手里的先用好，这次只补真正缺的。";
+  if (policy.behaviorSkills.includes("gentle_recall") && policy.usedMemory) return "我会参考你之前保存的偏好；要是变了，直接纠正我就行。";
   return "";
 }
 
@@ -183,8 +201,9 @@ export function planConversation(input: {
   const rejected = hasSignal(signals, "reject");
   const effectiveDraft: DecisionDraft = rejected && draft.action !== "safety" ? { ...draft, action: "close", recommendations: [], candidateSkus: [], totalFen: undefined, budgetGapFen: undefined, routeReason: "用户明确表示停止推荐或暂不购买" } : draft;
   const repeated = new Set(previousResult?.questionFields ?? []);
+  const decisionContextChanged = updatedFields.some((field) => ["intent", "categories", "targetSku"].includes(field));
   const selectedQuestionFields = effectiveDraft.action === "clarify"
-    ? effectiveDraft.questionFields.filter((field) => !repeated.has(field) || updatedFields.includes(field)).slice(0, 1)
+    ? effectiveDraft.questionFields.filter((field) => !repeated.has(field) || updatedFields.includes(field) || decisionContextChanged).slice(0, 1)
     : [];
   const emotion = acknowledgedEmotion(signals, effectiveDraft);
   const behaviorSkills = selectBehaviorSkills(signals, lifestyle, memory, effectiveDraft.action);
@@ -219,12 +238,12 @@ export function planConversation(input: {
   return {
     policy,
     factBlocks: factsFor(effectiveDraft, state),
-    questionGoals: selectedQuestionFields.map((field) => ({ field, fallback: questionCopy[field] ?? "可以再补充一点会影响选择的信息吗？" })),
+    questionGoals: selectedQuestionFields.map((field) => ({ field, fallback: questionFor(field, state) })),
   };
 }
 
 function prohibitedFreeText(text: string) {
-  return /P[123]\d{2}|[¥￥]|\d|保证|一定有效|治愈|治疗|绝对不过敏|马上见效|闭眼入|必须买|抓紧|最后机会|我也用|我买过/.test(text);
+  return /P[123]\d{2}|[¥￥]|\d|保证|一定有效|治愈|治疗|绝对不过敏|马上见效|闭眼入|必须买|抓紧|最后机会|我也用|我买过|根据您的需求|请问您|为了更好地|很高兴为您|亲[，,]|我完全理解/.test(text);
 }
 
 function emojiCount(text: string) {
@@ -244,6 +263,7 @@ export function validateRenderProposal(value: unknown, plan: ConversationPlan): 
   if (questions.length !== plan.policy.selectedQuestionFields.length) return null;
   for (const question of questions) {
     if (!question || !plan.policy.selectedQuestionFields.includes(question.field) || typeof question.text !== "string" || !question.text.trim() || question.text.length > 90 || prohibitedFreeText(question.text)) return null;
+    if ((question.text.match(/[？?]/g) ?? []).length > 1) return null;
   }
   const freeText = [acknowledgement, ...questions.map((item) => item.text), closing].join("");
   if (plan.policy.emojiPolicy === "none" && emojiCount(freeText) > 0) return null;
@@ -258,7 +278,7 @@ export function validateRenderProposal(value: unknown, plan: ConversationPlan): 
 export function renderTemplate(plan: ConversationPlan, signals: TurnSignal[]): RenderedCopy {
   const acknowledgement = plan.policy.shouldAcknowledge ? acknowledgementFor(plan.policy, signals) : "";
   const questions = plan.questionGoals.map((item) => item.fallback);
-  const closing = plan.policy.nextAction === "clarify" && !questions.length ? "你愿意时再补充就好，我先不重复追问。" : "";
+  const closing = plan.policy.nextAction === "clarify" && !questions.length ? "先不重复问了，你想起别的信息时再接着说就好。" : "";
   const parts = [acknowledgement, ...plan.factBlocks.map((block) => block.text), ...questions, closing].filter(Boolean);
   return { reply: parts.join(" "), questions, factBlockIds: plan.factBlocks.map((block) => block.id) };
 }

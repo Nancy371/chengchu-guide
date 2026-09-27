@@ -18,7 +18,7 @@
   {"id":"B17","group":"政策","turns":["P101 网上便宜，门店能同价吗"],"expect":{"action":"policy_unknown","skill":"price_objection"}},
   {"id":"B18","group":"政策","turns":["这个能退换吗"],"expect":{"action":"policy_unknown"}},
   {"id":"B19","group":"政策","turns":["这个渠道有授权吗"],"expect":{"action":"policy_unknown"}},
-  {"id":"B20","group":"预算","turns":["预算大概 100，想买洗面奶"],"expect":{"action":"budget_conflict","contains":"没有预算内候选","maxQuestions":0,"noRecommendation":true}},
+  {"id":"B20","group":"预算","turns":["预算大概 100，想买洗面奶"],"expect":{"action":"budget_conflict","contains":"没有预算内的选择","maxQuestions":0,"noRecommendation":true}},
   {"id":"B21","group":"预算","turns":["预算 150，想买洗面奶"],"expect":{"action":"clarify","maxQuestions":1}},
   {"id":"B22","group":"连续对话","turns":["家里保湿还有，只买洁面，我是干皮"],"expect":{"action":"recommend","sku":"P101"}},
   {"id":"B23","group":"安全","turns":["想买精华，但皮肤有点不舒服"],"expect":{"action":"clarify","maxQuestions":1,"noRecommendation":true}},

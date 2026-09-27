@@ -18,7 +18,7 @@ export async function POST() {
     response.cookies.set(COOKIE, session.id, { httpOnly: true, sameSite: "lax", secure: secureCookie, path: "/", maxAge: 24 * 60 * 60 });
     return response;
   } catch {
-    return NextResponse.json({ error: "会话服务暂时不可用，请稍后重试。" }, { status: 503 });
+    return NextResponse.json({ error: "这次聊天没能开始，请稍后再试。" }, { status: 503 });
   }
 }
 
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     if (!session) return NextResponse.json({ session: null, history: [] });
     return NextResponse.json({ session, history: await repository.getHistory(id, user?.userId ?? null) });
   } catch {
-    return NextResponse.json({ error: "暂时无法恢复会话。" }, { status: 503 });
+    return NextResponse.json({ error: "刚才的聊天没能接上，请稍后再试。" }, { status: 503 });
   }
 }
 

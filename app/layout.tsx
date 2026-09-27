@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "澄初 AI 金牌导购",
-  description: "基于澄初品牌手册与确定性业务规则的个人护理商品导购。",
+  description: "按你的需求、预算和使用习惯，结合澄初品牌手册给出个人护理商品建议。",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

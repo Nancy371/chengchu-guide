@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { effectiveStateView, validateUnderstanding } from "./state";
-import { validateRenderProposal, type ConversationPlan, type RenderedCopy } from "./conversation";
+import { conversationLanguageRules, validateRenderProposal, type ConversationPlan, type RenderedCopy } from "./conversation";
 import type { DecisionDraft, ModelAudit, TurnUnderstanding, UserState } from "./types";
 
 type Stage = ModelAudit["stage"];
@@ -74,7 +74,7 @@ export class DeepSeekModelAdapter {
 
   async extract(text: string, state: UserState): Promise<{ understanding: TurnUnderstanding | null; audit: ModelAudit }> {
     const result = await this.invoke("extract", [
-      { role: "system", content: "你只负责从当前用户消息提取导购状态增量、明确的当轮信号和生活偏好观察。只输出 JSON：{updates:[{field,value,quote,status}],signals:[{kind,value,quote,explicit,subject,temporal}],lifestyle:[{kind,value,quote,scope,explicit,subject}]}。quote 必须逐字来自当前消息。情绪只在用户明确表达时标 explicit=true；temporal 只能是 current、historical、unclear。预算低不代表焦虑，短句不代表生气。识别否定、过去经历、替别人咨询。不要计算价格、推荐商品或推测未说的信息。可用 signal value：worried,frustrated,hesitant,happy,price_objection,reject,correction,hurry,direct_answer,morning_rush,exercise,travel,simple_routine,existing_routine,sensory_discomfort。可用 lifestyle kind：routine_preference,frequent_travel,fragrance_preference,texture_preference,purchase_preference。" },
+      { role: "system", content: "你只负责从当前用户消息提取导购状态增量、明确的当轮信号和生活偏好观察。只输出 JSON：{updates:[{field,value,quote,status}],signals:[{kind,value,quote,explicit,subject,temporal}],lifestyle:[{kind,value,quote,scope,explicit,subject}]}。quote 必须逐字来自当前消息。情绪只在用户明确表达时标 explicit=true；temporal 只能是 current、historical、unclear。预算低不代表焦虑，短句不代表生气。识别否定、过去经历、替别人咨询。“算了，还是看保湿吧”这类说法是改变选择，不是拒绝；只有明确停止咨询或暂不购买才标记 reject。不要计算价格、推荐商品或推测未说的信息。可用 signal value：worried,frustrated,hesitant,happy,price_objection,reject,correction,hurry,direct_answer,morning_rush,exercise,travel,simple_routine,existing_routine,sensory_discomfort。可用 lifestyle kind：routine_preference,frequent_travel,fragrance_preference,texture_preference,purchase_preference。" },
       { role: "user", content: JSON.stringify({ currentState: effectiveStateView(state), currentMessage: text }, null, 2) },
     ], 8000, false, true);
     const understanding = validateUnderstanding(result.value, text);
@@ -103,7 +103,7 @@ export class DeepSeekModelAdapter {
   async render(plan: ConversationPlan, timeoutMs = 6000): Promise<{ copy: RenderedCopy | null; audit: ModelAudit }> {
     if (timeoutMs < 500) return { copy: null, audit: this.emptyAudit("render", "deadline_exhausted") };
     const result = await this.invoke("render", [
-      { role: "system", content: "你是澄初导购的受控表达器，只负责承接、过渡、提问和收尾。事实句由 factBlocks 锁定，你只能在 blockIds 中排列，不能复述、改写或新增价格、SKU、功效、安全和政策事实。免费文本中不要出现数字、货币、SKU、医疗承诺、催单或虚构亲身经历。根据 policy 输出 JSON：{acknowledgement:string,blockIds:string[],questions:[{field:string,text:string}],closing:string,actsUsed:string[]}。questions 字段必须与 selectedQuestionFields 完全一致。语气自然、轻松、克制，不固定说“我理解你的心情”。" },
+      { role: "system", content: `你是澄初导购的受控表达器，只负责承接、过渡、提问和收尾。事实句由 factBlocks 锁定，你只能在 blockIds 中排列，不能复述、改写或新增价格、SKU、功效、安全和政策事实。免费文本中不要出现数字、货币、SKU、医疗承诺、催单或虚构亲身经历。根据 policy 输出 JSON：{acknowledgement:string,blockIds:string[],questions:[{field:string,text:string}],closing:string,actsUsed:string[]}。questions 字段必须与 selectedQuestionFields 完全一致。\n\n说话要求：\n- ${conversationLanguageRules.join("\n- ")}\n- acknowledgement、question 和 closing 都要短；没有实际作用的客套不要写。\n- 直接问价格或结论时先回答，不强加安慰；赶时间或烦躁时更短、更直接。\n- 只写顾客听得懂的话，不解释内部策略、字段名或模型过程。` },
       { role: "user", content: JSON.stringify({ policy: plan.policy, factBlocks: plan.factBlocks, questionGoals: plan.questionGoals }, null, 2) },
     ], Math.min(6000, timeoutMs), false, true, 600);
     const copy = validateRenderProposal(result.value, plan);

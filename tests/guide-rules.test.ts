@@ -63,3 +63,14 @@ test("model delta requires a literal source quote and reasoning cannot revive ex
   assert.equal(reasoned.candidateSkus.includes("P102"), false);
   assert.equal(mergeDeltas(null, deterministicExtract("想买洁面")).updates.length > 0, true);
 });
+
+test("literal local category wording overrides a stale model category", () => {
+  const text = "算了，还是只看保湿吧";
+  const merged = mergeDeltas({
+    extraction: "model",
+    warnings: [],
+    updates: [{ field: "categories", value: ["cleanser"], quote: text, status: "confirmed", extractedBy: "model" }],
+  }, deterministicExtract(text));
+
+  assert.deepEqual(merged.updates.find((item) => item.field === "categories")?.value, ["moisturizer"]);
+});
