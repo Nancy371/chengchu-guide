@@ -219,6 +219,30 @@ export interface DecisionResult extends DecisionDraft {
     state: number;
     knowledge: string;
   };
+  decisionTrace?: DecisionTrace;
+}
+
+export type DecisionToolName = "search_products" | "get_product_detail" | "check_safety" | "check_eligibility" | "check_budget" | "compare_products" | "lookup_policy";
+export interface ToolObservation { order: number; tool: DecisionToolName; outcome: string }
+export interface DecisionTrace {
+  tools: Array<{ tool: DecisionToolName; outcome: string }>;
+  eligibility: Array<{ sku: string; status: ProductFit["status"] }>;
+  versions: DecisionResult["versions"];
+  routeReason: string;
+}
+
+export interface AgentContext {
+  goal: { type: "buy_product" | "price" | "policy" | "unknown"; categories: string[]; targetSku?: string };
+  userState: Readonly<UserState>;
+  habits: { version: number; relevant: ReadonlyArray<HabitMemory> };
+  candidateProducts: ReadonlyArray<ProductFit>;
+  currentDecision: DecisionDraft | null;
+  completedActions: ReadonlyArray<DecisionToolName>;
+  observations: ReadonlyArray<ToolObservation>;
+  pendingQuestions: ReadonlyArray<StateField>;
+  allowedActions: ReadonlyArray<"ask_user" | DecisionToolName | "finish">;
+  step: 0;
+  versions: DecisionResult["versions"];
 }
 
 export interface SessionRecord {

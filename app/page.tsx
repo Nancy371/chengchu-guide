@@ -244,6 +244,13 @@ function EvidenceDrawer({ result }: { result: DecisionResult | null }) {
                   <div className="audit-summary">
                     <p>输入版本 <strong>{result.versions.input}</strong> · 状态版本 <strong>{result.versions.state}</strong></p>
                     <p>知识版本 <strong>{result.versions.knowledge}</strong></p>
+                    {result.decisionTrace ? (
+                      <>
+                        <p>决策路由 <strong>{result.decisionTrace.routeReason}</strong></p>
+                        <p>工具轨迹 <strong>{result.decisionTrace.tools.map((item) => item.tool).join(" → ") || "无"}</strong></p>
+                        <p>资格结果 <strong>{result.decisionTrace.eligibility.map((item) => `${item.sku}: ${item.status}`).join("、") || "无"}</strong></p>
+                      </>
+                    ) : null}
                     {(result.audits ?? []).map((audit, index) => (
                       <p key={`${audit.stage}-${index}`}>{audit.stage} · {audit.modelInvoked ? `${audit.model} / ${audit.used ? "已采用" : "未采用"}` : "本地降级"} · {audit.latencyMs}ms</p>
                     ))}

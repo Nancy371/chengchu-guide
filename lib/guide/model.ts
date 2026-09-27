@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { effectiveStateView, validateUnderstanding } from "./state";
+import { compileReasoningContext } from "./agent-context";
 import { conversationLanguageRules, validateRenderProposal, type ConversationPlan, type RenderedCopy } from "./conversation";
-import type { DecisionDraft, ModelAudit, TurnUnderstanding, UserState } from "./types";
+import type { AgentContext, ModelAudit, TurnUnderstanding, UserState } from "./types";
 
 type Stage = ModelAudit["stage"];
 
@@ -82,12 +83,12 @@ export class DeepSeekModelAdapter {
     return { understanding, proposal: result.value, audit: { ...result.audit, schemaSuccess: accepted, businessAccepted: accepted, used: accepted } };
   }
 
-  async reason(state: UserState, draft: DecisionDraft, deadlineAt = Number.POSITIVE_INFINITY): Promise<{ proposal: unknown; audits: ModelAudit[] }> {
+  async reason(context: AgentContext, deadlineAt = Number.POSITIVE_INFINITY): Promise<{ proposal: unknown; audits: ModelAudit[] }> {
     const reasonBudget = Math.min(24000, deadlineAt - Date.now());
     if (reasonBudget < 500) return { proposal: null, audits: [this.emptyAudit("reason", "deadline_exhausted")] };
     const result = await this.invoke("reason", [
       { role: "system", content: "你是导购决策复核器。只可在 candidateFits 中未排除的 SKU 内排序，或从 allowedQuestionFields 中选择最多两个追问字段。不得修改价格、商品事实、用户已确认状态或规则。最终 content 只输出 JSON：{candidateSkus:string[],questionFields:string[]}。" },
-      { role: "user", content: JSON.stringify({ currentState: effectiveStateView(state), routeReason: draft.routeReason, candidateFits: draft.productFits, allowedQuestionFields: draft.questionFields }, null, 2) },
+      { role: "user", content: JSON.stringify(compileReasoningContext(context)) },
     ], reasonBudget, true, false);
     if (result.value) return { proposal: result.value, audits: [{ ...result.audit, businessAccepted: true, used: true }] };
     if (!result.raw) return { proposal: null, audits: [result.audit] };

@@ -1,5 +1,6 @@
 import { planConversation, renderTemplate } from "./conversation";
-import { applyReasoningProposal, decide, KNOWLEDGE_VERSION } from "./decision";
+import { buildAgentContext, decideWithContext, decisionTrace, withDecision } from "./agent-context";
+import { applyReasoningProposal, KNOWLEDGE_VERSION } from "./decision";
 import { DeepSeekModelAdapter } from "./model";
 import { D1GuideRepository } from "./repository";
 import { composeResult } from "./response";
@@ -81,16 +82,20 @@ export class ConversationRuntime {
       const memoryProfile = userId
         ? await this.repository.getMemoryProfile(userId)
         : { enabled: false, version: 0, memories: [] };
-      let draft = decide(checkpoint.state, memoryProfile.memories);
+      let agentContext = decideWithContext(buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version }));
+      let draft = agentContext.currentDecision!;
       const deadlineAt = startedAt + (draft.route === "reasoning" ? 40_000 : 20_000);
       if (draft.route === "reasoning") {
-        const reasoned = await this.model.reason(checkpoint.state, draft, deadlineAt);
+        const reasoned = await this.model.reason(agentContext, deadlineAt);
         audits.push(...reasoned.audits);
         draft = applyReasoningProposal(draft, reasoned.proposal, checkpoint.state);
+        agentContext = withDecision(agentContext, draft);
       }
 
-      const revalidated = decide(checkpoint.state, memoryProfile.memories);
+      agentContext = decideWithContext(agentContext);
+      const revalidated = agentContext.currentDecision!;
       if (["safety", "budget_conflict", "policy_unknown", "close"].includes(revalidated.action)) draft = revalidated;
+      agentContext = withDecision(agentContext, draft);
 
       const plan = planConversation({
         draft,
@@ -134,6 +139,7 @@ export class ConversationRuntime {
         rendered,
         renderSource: rendered && !renderFallbackReason ? "model" : "template",
         renderFallbackReason,
+        decisionTrace: decisionTrace(agentContext),
       });
       const committed = await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, result);
       if (!committed) {
@@ -169,10 +175,11 @@ export class ConversationRuntime {
       }
       const latest = await this.repository.getSession(sessionId, userId);
       if (checkpoint && latest?.inputVersion === begin.inputVersion && latest.appliedInputVersion === begin.inputVersion) {
-        const fallback = composeResult(decide(checkpoint.state), checkpoint.state, audits,
+        const fallbackContext = decideWithContext(buildAgentContext({ session: checkpoint }));
+        const fallback = composeResult(fallbackContext.currentDecision!, checkpoint.state, audits,
           { input: begin.inputVersion, state: checkpoint.stateVersion, knowledge: KNOWLEDGE_VERSION },
           { signals: understanding.signals, lifestyle: understanding.lifestyle, previousResult: begin.previousResult,
-            updatedFields: understanding.delta.updates.map((item) => item.field), renderFallbackReason: "runtime_fallback" });
+            updatedFields: understanding.delta.updates.map((item) => item.field), renderFallbackReason: "runtime_fallback", decisionTrace: decisionTrace(fallbackContext) });
         if (await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, fallback)) {
           return { result: fallback, duplicate: false, stale: false };
         }

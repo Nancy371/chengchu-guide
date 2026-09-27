@@ -1,5 +1,5 @@
 import { planConversation, renderTemplate, type ConversationPlan, type RenderedCopy } from "./conversation";
-import type { DecisionDraft, DecisionResult, HabitMemory, LifestyleObservation, ModelAudit, StateField, TurnSignal, UserState } from "./types";
+import type { DecisionDraft, DecisionResult, DecisionTrace, HabitMemory, LifestyleObservation, ModelAudit, StateField, TurnSignal, UserState } from "./types";
 
 interface ComposeContext {
   signals?: TurnSignal[];
@@ -11,6 +11,7 @@ interface ComposeContext {
   rendered?: RenderedCopy | null;
   renderSource?: "model" | "template";
   renderFallbackReason?: string;
+  decisionTrace?: DecisionTrace;
 }
 
 export function composeResult(
@@ -52,6 +53,7 @@ export function composeResult(
       factBlockIds: copy.factBlockIds,
     },
     versions,
+    ...(context.decisionTrace ? { decisionTrace: { ...context.decisionTrace, routeReason: finalDraft.routeReason } } : {}),
   };
 }
 

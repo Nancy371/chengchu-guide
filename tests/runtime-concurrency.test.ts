@@ -94,6 +94,8 @@ test("a later pain message survives a late old recommendation", async () => {
   await until(() => repo.session.appliedInputVersion === 1);
   const second = await agent.handleTurn("s", "r2", "我现在脸很疼");
   assert.equal(second.result.action, "safety");
+  assert.deepEqual(second.result.decisionTrace?.versions, second.result.versions);
+  assert.equal(second.result.decisionTrace?.tools.some((item) => item.tool === "check_safety"), true);
   gate.release();
   const old = await first;
   assert.equal(old.stale, true);
@@ -111,6 +113,8 @@ test("expired predecessor is replayed locally before the new safety input", asyn
   await until(() => repo.session.inputVersion === 1);
   const second = await agent.handleTurn("s", "r2", "没有刺痛，但皮肤破损");
   assert.equal(second.result.action, "safety");
+  assert.equal(second.result.decisionTrace?.versions.input, 2);
+  assert.equal(second.result.decisionTrace?.eligibility.some((item) => item.status === "eligible"), false);
   assert.equal(repo.session.state.facts.targetSku?.value, "P101");
   assert.equal(repo.session.state.facts.stinging?.value, false);
   assert.equal(repo.session.state.facts.skinDamage?.value, true);
@@ -129,6 +133,7 @@ test("retrying a completed request does not apply its input twice", async () => 
   assert.equal(repo.session.inputVersion, 1);
   assert.equal(repo.session.appliedInputVersion, 1);
   assert.equal(repo.session.state.turn, 1);
+  assert.deepEqual(again.result.decisionTrace, first.result.decisionTrace);
 });
 
 test("semantic review rejection and failure fall back to the local template", async () => {
