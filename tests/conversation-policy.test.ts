@@ -104,6 +104,15 @@ test("the renderer cannot inject SKU, prices, promises or extra questions", () =
   }, plan), null);
 });
 
+test("the renderer rejects unsupported gifts, returns, effects and contact questions", () => {
+  const state = stateFrom("想买洗面奶");
+  const plan = planConversation({ draft: decide(state), state, signals: [], lifestyle: [], memories: [], updatedFields: ["categories"] });
+  const base = { acknowledgement: "", blockIds: plan.factBlocks.map((item) => item.id), questions: [{ field: "skinType", text: "平时偏干还是偏油？" }], closing: "" };
+  assert.equal(validateRenderProposal({ ...base, closing: "买就送小样，拆封也能退。" }, plan), null);
+  assert.equal(validateRenderProposal({ ...base, closing: "还能美白淡斑。" }, plan), null);
+  assert.equal(validateRenderProposal({ ...base, closing: "请留下地址和电话？" }, plan), null);
+});
+
 test("the renderer rejects robotic phrasing and stacked questions", () => {
   const state = stateFrom("想买洗面奶");
   const draft = decide(state);

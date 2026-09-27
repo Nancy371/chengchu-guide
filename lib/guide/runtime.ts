@@ -3,8 +3,20 @@ import { applyReasoningProposal, decide, KNOWLEDGE_VERSION } from "./decision";
 import { DeepSeekModelAdapter } from "./model";
 import { D1GuideRepository } from "./repository";
 import { composeResult } from "./response";
-import { applyDelta, deterministicUnderstand, mergeUnderstanding } from "./state";
-import type { DecisionResult, ModelAudit, TurnUnderstanding } from "./types";
+import { deterministicUnderstand } from "./state";
+import { verifiedState } from "./verified-state";
+import type { DecisionResult, ModelAudit, SessionRecord, TurnUnderstanding } from "./types";
+
+const PREDECESSOR_TIMEOUT_MS = 12_000;
+
+function staleResult(session: SessionRecord): DecisionResult {
+  const result = composeResult({
+    action: "unavailable", route: "degraded", routeReason: "本轮回复已失效", questionFields: [],
+    candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: ["请以最新输入的回复为准"],
+  }, session.state, [], { input: session.inputVersion, state: session.stateVersion, knowledge: KNOWLEDGE_VERSION },
+  { signals: [], lifestyle: [], updatedFields: [], renderFallbackReason: "stale_input" });
+  return { ...result, reply: "已收到更新的消息，前一条建议先别看；我会按最新信息重新判断。", recommendations: [] };
+}
 
 export class ConversationRuntime {
   constructor(
@@ -12,37 +24,58 @@ export class ConversationRuntime {
     private model = new DeepSeekModelAdapter(),
   ) {}
 
+  private async awaitPredecessors(sessionId: string, inputVersion: number, userId: string | null): Promise<SessionRecord | null> {
+    for (;;) {
+      const current = await this.repository.getSession(sessionId, userId);
+      if (!current || current.appliedInputVersion >= inputVersion) return null;
+      if (current.appliedInputVersion === inputVersion - 1) return current;
+      const pending = await this.repository.getPendingInput(sessionId, current.appliedInputVersion + 1, userId);
+      if (!pending) throw new Error("pending_input_missing");
+      if (Date.now() >= pending.created_at + PREDECESSOR_TIMEOUT_MS) {
+        const verified = await verifiedState.update({ currentState: current.state, userMessage: pending.text });
+        const recovered = await this.repository.commitState(sessionId, current.appliedInputVersion + 1, current.stateVersion, verified.state);
+        if (recovered) await this.repository.failTurn(sessionId, pending.request_id, staleResult(recovered));
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
   async handleTurn(sessionId: string, requestId: string, text: string, userId: string | null = null): Promise<{ result: DecisionResult; duplicate: boolean; stale: boolean }> {
-    const startedAt = Date.now();
     const begin = await this.repository.beginTurn(sessionId, requestId, text, userId);
     if (begin.duplicate) {
+      if (begin.inputVersion < begin.session.inputVersion) return { result: staleResult(begin.session), duplicate: true, stale: true };
       if (begin.response) return { result: begin.response, duplicate: true, stale: false };
       throw new Error(begin.processing ? "request_processing" : "duplicate_without_result");
     }
 
     const audits: ModelAudit[] = [];
-    let understanding: TurnUnderstanding = deterministicUnderstand(text);
+    let understanding: TurnUnderstanding = deterministicUnderstand(text, begin.previousResult?.questionFields[0]);
+    let checkpoint: SessionRecord | null = null;
     try {
-      const extracted = await this.model.extract(text, begin.session.state);
-      audits.push(extracted.audit);
-      understanding = mergeUnderstanding(extracted.understanding, understanding);
-      const state = applyDelta(begin.session.state, understanding.delta);
-      const updatedFields = understanding.delta.updates.map((item) => item.field);
+      const predecessor = await this.awaitPredecessors(sessionId, begin.inputVersion, userId);
+      if (!predecessor) {
+        const current = await this.repository.getSession(sessionId, userId);
+        if (!current) throw new Error("session_not_found");
+        const stale = staleResult(current);
+        await this.repository.failTurn(sessionId, requestId, stale);
+        return { result: stale, duplicate: false, stale: true };
+      }
+      const startedAt = Date.now();
+      const verified = await verifiedState.update({ currentState: predecessor.state, userMessage: text, pendingQuestion: begin.previousResult?.questionFields[0],
+        extract: (message, state) => this.model.extract(message, state) });
+      if (verified.audit.model) audits.push(verified.audit.model);
+      understanding = verified.understanding;
+      const state = verified.state;
+      const updatedFields = verified.audit.updatedFields;
 
-      const checkpoint = await this.repository.commitState(sessionId, begin.session.inputVersion, begin.session.stateVersion, state);
+      checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, predecessor.stateVersion, state);
       if (!checkpoint) {
         const current = await this.repository.getSession(sessionId, userId);
-        const fallback = current?.result ?? composeResult({
-          action: "unavailable", route: "degraded", routeReason: "检测到更新的用户输入，本轮迟到结果已丢弃", questionFields: [], candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: ["前一条结果已经过期，以最新回复为准"],
-        }, current?.state ?? state, audits, { input: current?.inputVersion ?? begin.session.inputVersion, state: current?.stateVersion ?? begin.session.stateVersion, knowledge: KNOWLEDGE_VERSION }, {
-          signals: understanding.signals,
-          lifestyle: understanding.lifestyle,
-          previousResult: begin.previousResult,
-          updatedFields,
-          renderFallbackReason: "stale_state",
-        });
-        await this.repository.failTurn(sessionId, requestId, fallback);
-        return { result: fallback, duplicate: false, stale: true };
+        if (!current) throw new Error("session_not_found");
+        const stale = staleResult(current);
+        await this.repository.failTurn(sessionId, requestId, stale);
+        return { result: stale, duplicate: false, stale: true };
       }
 
       const memoryProfile = userId
@@ -75,13 +108,20 @@ export class ConversationRuntime {
         renderFallbackReason = "deterministic_safety_or_close";
       } else {
         const renderResult = await this.model.render(plan, deadlineAt - Date.now());
-        audits.push(renderResult.audit);
-        rendered = renderResult.copy;
-        renderFallbackReason = renderResult.copy ? undefined : renderResult.audit.failureReason ?? "render_unavailable";
+        if (renderResult.copy) {
+          const review = await this.model.reviewRender(plan, renderResult.copy, deadlineAt - Date.now());
+          audits.push({ ...renderResult.audit, used: review.approved });
+          audits.push(review.audit);
+          rendered = review.approved ? renderResult.copy : null;
+          renderFallbackReason = review.approved ? undefined : review.audit.failureReason ?? "render_review_rejected";
+        } else {
+          audits.push(renderResult.audit);
+          renderFallbackReason = renderResult.audit.failureReason ?? "render_unavailable";
+        }
       }
 
       const result = composeResult(draft, checkpoint.state, audits, {
-        input: checkpoint.inputVersion,
+        input: begin.inputVersion,
         state: checkpoint.stateVersion,
         knowledge: KNOWLEDGE_VERSION,
       }, {
@@ -95,11 +135,13 @@ export class ConversationRuntime {
         renderSource: rendered && !renderFallbackReason ? "model" : "template",
         renderFallbackReason,
       });
-      const committed = await this.repository.commitResult(sessionId, requestId, checkpoint.inputVersion, checkpoint.stateVersion, result);
+      const committed = await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, result);
       if (!committed) {
         const current = await this.repository.getSession(sessionId, userId);
-        const fallback = current?.result ?? { ...result, action: "unavailable" as const, route: "degraded" as const, routeReason: "出现更新的用户输入，本轮结果已失效", reply: "看到你刚补充的信息了，我会按最新内容重新判断。前一条建议先别看，以接下来的回复为准。", recommendations: [] };
-        return { result: fallback, duplicate: false, stale: true };
+        if (!current) throw new Error("session_not_found");
+        const stale = staleResult(current);
+        await this.repository.failTurn(sessionId, requestId, stale);
+        return { result: stale, duplicate: false, stale: true };
       }
 
       if (userId && memoryProfile.enabled) {
@@ -107,7 +149,7 @@ export class ConversationRuntime {
           await this.repository.saveHabitObservations({
             userId,
             sessionId,
-            inputVersion: checkpoint.inputVersion,
+            inputVersion: begin.inputVersion,
             stateVersion: checkpoint.stateVersion,
             settingsVersion: memoryProfile.version,
             turn: checkpoint.state.turn,
@@ -120,22 +162,26 @@ export class ConversationRuntime {
       return { result, duplicate: false, stale: false };
     } catch (error) {
       const current = await this.repository.getSession(sessionId, userId);
-      const memories = userId ? (await this.repository.getMemoryProfile(userId).catch(() => ({ enabled: false, version: 0, memories: [] }))).memories : [];
-      const hasImmediateSafetyUpdate = understanding.delta.updates.some((item) => item.field === "currentDiscomfort" && item.value === true);
-      const fallbackState = current && hasImmediateSafetyUpdate && current.state.turn <= begin.session.state.turn
-        ? applyDelta(current.state, understanding.delta)
-        : current?.state;
-      const fallbackDraft = fallbackState ? decide(fallbackState, memories) : null;
-      const fallback = fallbackDraft && current && fallbackState ? composeResult(fallbackDraft, fallbackState, audits, { input: current.inputVersion, state: current.stateVersion, knowledge: KNOWLEDGE_VERSION }, {
-        signals: understanding.signals,
-        lifestyle: understanding.lifestyle,
-        memories,
-        previousResult: begin.previousResult,
-        updatedFields: understanding.delta.updates.map((item) => item.field),
-        renderFallbackReason: "runtime_fallback",
-      }) : null;
-      await this.repository.failTurn(sessionId, requestId, fallback);
-      if (fallback) return { result: fallback, duplicate: false, stale: false };
+      if (current?.appliedInputVersion === begin.inputVersion - 1) {
+        const verified = await verifiedState.update({ currentState: current.state, userMessage: text, pendingQuestion: begin.previousResult?.questionFields[0] });
+        understanding = verified.understanding;
+        checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, current.stateVersion, verified.state);
+      }
+      const latest = await this.repository.getSession(sessionId, userId);
+      if (checkpoint && latest?.inputVersion === begin.inputVersion && latest.appliedInputVersion === begin.inputVersion) {
+        const fallback = composeResult(decide(checkpoint.state), checkpoint.state, audits,
+          { input: begin.inputVersion, state: checkpoint.stateVersion, knowledge: KNOWLEDGE_VERSION },
+          { signals: understanding.signals, lifestyle: understanding.lifestyle, previousResult: begin.previousResult,
+            updatedFields: understanding.delta.updates.map((item) => item.field), renderFallbackReason: "runtime_fallback" });
+        if (await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, fallback)) {
+          return { result: fallback, duplicate: false, stale: false };
+        }
+      }
+      if (latest) {
+        const stale = staleResult(latest);
+        await this.repository.failTurn(sessionId, requestId, stale);
+        return { result: stale, duplicate: false, stale: true };
+      }
       throw error;
     }
   }

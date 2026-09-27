@@ -21,7 +21,7 @@ function productRecommendation(sku: string, fit?: ProductFit): Recommendation {
 function activeCategories(state: UserState): string[] {
   const categories = fact<string[]>(state, "categories") ?? [];
   const targetSku = fact<string>(state, "targetSku");
-  if (targetSku && PRODUCTS_BY_SKU[targetSku]) return [PRODUCTS_BY_SKU[targetSku].category];
+  if (targetSku && PRODUCTS_BY_SKU[targetSku] && (!categories.length || categories.includes(PRODUCTS_BY_SKU[targetSku].category))) return [PRODUCTS_BY_SKU[targetSku].category];
   return categories;
 }
 
@@ -136,7 +136,9 @@ export function decide(state: UserState, memories: HabitMemory[] = []): Decision
   const draft = baseDraft(fits);
   const discomfort = fact<boolean | string>(state, "currentDiscomfort");
   const intent = fact<string>(state, "intent");
-  const targetSku = fact<string>(state, "targetSku");
+  const storedSku = fact<string>(state, "targetSku");
+  const explicitCategories = fact<string[]>(state, "categories") ?? [];
+  const targetSku = storedSku && PRODUCTS_BY_SKU[storedSku] && (!explicitCategories.length || explicitCategories.includes(PRODUCTS_BY_SKU[storedSku].category)) ? storedSku : undefined;
   const policyTopics = fact<string[]>(state, "policyTopics") ?? [];
   const categories = activeCategories(state);
   const budget = fact<number>(state, "budget");

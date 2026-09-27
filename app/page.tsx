@@ -281,7 +281,7 @@ export default function Home() {
       if (!created.ok) throw new Error(payload.error ?? "这次对话没能开始，请稍后再试。");
     }
     setHistory(payload.history ?? []);
-    setLatestResult(payload.session?.result ?? payload.history?.at(-1)?.result ?? null);
+    setLatestResult(payload.session?.result ?? null);
   }
 
   useEffect(() => {

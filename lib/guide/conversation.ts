@@ -134,7 +134,7 @@ function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
   if (draft.action === "close") return [{ id: "close", text: "好，那这次就先停在这里。什么时候想再看看再来，不急。" }];
   if (draft.action === "policy_unknown") {
     const topics = fact<string[]>(state, "policyTopics") ?? [];
-    const targetSku = fact<string>(state, "targetSku");
+    const targetSku = draft.candidateSkus[0];
     const blocks: FactBlock[] = [];
     if (targetSku && PRODUCTS_BY_SKU[targetSku]) blocks.push({ id: `price:${targetSku}`, text: `手册中 ${targetSku} 的标价是 ${formatMoney(PRODUCTS_BY_SKU[targetSku].priceFen)}。` });
     blocks.push({ id: "policy-limit", text: `品牌手册里没有写明${topics.map((topic) => UNSUPPORTED_POLICY_TOPICS[topic] ?? topic).join("、")}，这点得请门店或系统确认，我不替他们猜。` });
@@ -201,7 +201,8 @@ export function planConversation(input: {
   const rejected = hasSignal(signals, "reject");
   const effectiveDraft: DecisionDraft = rejected && draft.action !== "safety" ? { ...draft, action: "close", recommendations: [], candidateSkus: [], totalFen: undefined, budgetGapFen: undefined, routeReason: "用户明确表示停止推荐或暂不购买" } : draft;
   const repeated = new Set(previousResult?.questionFields ?? []);
-  const decisionContextChanged = updatedFields.some((field) => ["intent", "categories", "targetSku"].includes(field));
+  const decisionContextChanged = (["categories", "targetSku"] as const).some((field) =>
+    updatedFields.includes(field) && JSON.stringify(previousResult?.state?.facts?.[field]?.value) !== JSON.stringify(state.facts[field]?.value));
   const selectedQuestionFields = effectiveDraft.action === "clarify"
     ? effectiveDraft.questionFields.filter((field) => !repeated.has(field) || updatedFields.includes(field) || decisionContextChanged).slice(0, 1)
     : [];
@@ -237,13 +238,18 @@ export function planConversation(input: {
   };
   return {
     policy,
-    factBlocks: factsFor(effectiveDraft, state),
+    factBlocks: [
+      ...factsFor(effectiveDraft, state),
+      ...(effectiveDraft.action === "clarify" && effectiveDraft.questionFields.includes("skinType") && !selectedQuestionFields.length
+        ? [{ id: "skin-type-unconfirmed", text: "我还不能从这句话确认你偏干还是偏油，所以暂时不能按肤质选。你想清楚后直接告诉我就好。" }]
+        : []),
+    ],
     questionGoals: selectedQuestionFields.map((field) => ({ field, fallback: questionFor(field, state) })),
   };
 }
 
 function prohibitedFreeText(text: string) {
-  return /P[123]\d{2}|[¥￥]|\d|保证|一定有效|治愈|治疗|绝对不过敏|马上见效|闭眼入|必须买|抓紧|最后机会|我也用|我买过|根据您的需求|请问您|为了更好地|很高兴为您|亲[，,]|我完全理解/.test(text);
+  return /P[123]\d{2}|[¥￥]|\d|保证|一定有效|治愈|治疗|绝对不过敏|马上见效|闭眼入|必须买|抓紧|最后机会|我也用|我买过|根据您的需求|请问您|为了更好地|很高兴为您|亲[，,]|我完全理解|(?:送|赠)(?:小样|礼品|赠品|东西)|赠品|退货|退款|换货|退换|拆封|包邮|正品|授权|淡斑|美白|抗老|祛痘|改善皱纹|手机号|电话|联系方式|地址|收货/.test(text);
 }
 
 function emojiCount(text: string) {
@@ -258,12 +264,12 @@ export function validateRenderProposal(value: unknown, plan: ConversationPlan): 
   const acknowledgement = typeof proposal.acknowledgement === "string" ? proposal.acknowledgement.trim() : "";
   const closing = typeof proposal.closing === "string" ? proposal.closing.trim() : "";
   if (plan.policy.shouldAcknowledge && !acknowledgement) return null;
-  if (acknowledgement.length > 70 || closing.length > 70 || prohibitedFreeText(`${acknowledgement}${closing}`)) return null;
+  if (acknowledgement.length > 70 || closing.length > 70 || prohibitedFreeText(`${acknowledgement}${closing}`) || /[？?]/.test(`${acknowledgement}${closing}`)) return null;
   const questions = Array.isArray(proposal.questions) ? proposal.questions : [];
   if (questions.length !== plan.policy.selectedQuestionFields.length) return null;
   for (const question of questions) {
     if (!question || !plan.policy.selectedQuestionFields.includes(question.field) || typeof question.text !== "string" || !question.text.trim() || question.text.length > 90 || prohibitedFreeText(question.text)) return null;
-    if ((question.text.match(/[？?]/g) ?? []).length > 1) return null;
+    if ((question.text.match(/[？?]/g) ?? []).length !== 1) return null;
   }
   const freeText = [acknowledgement, ...questions.map((item) => item.text), closing].join("");
   if (plan.policy.emojiPolicy === "none" && emojiCount(freeText) > 0) return null;

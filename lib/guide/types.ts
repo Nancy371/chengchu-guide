@@ -7,6 +7,10 @@ export type StateField =
   | "skinType"
   | "sensitiveTendency"
   | "currentDiscomfort"
+  | "stinging"
+  | "pain"
+  | "skinDamage"
+  | "otherDiscomfort"
   | "fragrancePreference"
   | "acidExperience"
   | "existingProducts"
@@ -40,6 +44,8 @@ export interface UserState {
   history: SourcedFact[];
   pendingQuestion?: string;
   turn: number;
+  /** Unresolved aggregate risk from a session saved before symptom facts existed. */
+  unresolvedLegacyDiscomfort?: boolean;
 }
 
 export type SignalKind = "emotion" | "communication" | "lifestyle";
@@ -163,7 +169,7 @@ export interface Recommendation {
 }
 
 export interface ModelAudit {
-  stage: "extract" | "reason" | "normalize" | "render";
+  stage: "extract" | "reason" | "normalize" | "render" | "render_review";
   model: string;
   modelInvoked: boolean;
   parseSuccess: boolean;
@@ -220,6 +226,7 @@ export interface SessionRecord {
   userId: string | null;
   state: UserState;
   inputVersion: number;
+  appliedInputVersion: number;
   stateVersion: number;
   result: DecisionResult | null;
 }

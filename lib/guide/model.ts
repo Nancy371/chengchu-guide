@@ -27,7 +27,7 @@ export class DeepSeekModelAdapter {
   private modelFor(stage: Stage): string {
     if (stage === "reason") return this.reasonModel;
     if (stage === "normalize") return this.normalizeModel;
-    if (stage === "render") return this.renderModel;
+    if (stage === "render" || stage === "render_review") return this.renderModel;
     return this.extractModel;
   }
 
@@ -72,14 +72,14 @@ export class DeepSeekModelAdapter {
     }
   }
 
-  async extract(text: string, state: UserState): Promise<{ understanding: TurnUnderstanding | null; audit: ModelAudit }> {
+  async extract(text: string, state: UserState): Promise<{ understanding: TurnUnderstanding | null; proposal: unknown; audit: ModelAudit }> {
     const result = await this.invoke("extract", [
       { role: "system", content: "你只负责从当前用户消息提取导购状态增量、明确的当轮信号和生活偏好观察。只输出 JSON：{updates:[{field,value,quote,status}],signals:[{kind,value,quote,explicit,subject,temporal}],lifestyle:[{kind,value,quote,scope,explicit,subject}]}。quote 必须逐字来自当前消息。情绪只在用户明确表达时标 explicit=true；temporal 只能是 current、historical、unclear。预算低不代表焦虑，短句不代表生气。识别否定、过去经历、替别人咨询。“算了，还是看保湿吧”这类说法是改变选择，不是拒绝；只有明确停止咨询或暂不购买才标记 reject。不要计算价格、推荐商品或推测未说的信息。可用 signal value：worried,frustrated,hesitant,happy,price_objection,reject,correction,hurry,direct_answer,morning_rush,exercise,travel,simple_routine,existing_routine,sensory_discomfort。可用 lifestyle kind：routine_preference,frequent_travel,fragrance_preference,texture_preference,purchase_preference。" },
       { role: "user", content: JSON.stringify({ currentState: effectiveStateView(state), currentMessage: text }, null, 2) },
     ], 8000, false, true);
     const understanding = validateUnderstanding(result.value, text);
     const accepted = understanding !== null;
-    return { understanding, audit: { ...result.audit, schemaSuccess: accepted, businessAccepted: accepted, used: accepted } };
+    return { understanding, proposal: result.value, audit: { ...result.audit, schemaSuccess: accepted, businessAccepted: accepted, used: accepted } };
   }
 
   async reason(state: UserState, draft: DecisionDraft, deadlineAt = Number.POSITIVE_INFINITY): Promise<{ proposal: unknown; audits: ModelAudit[] }> {
@@ -109,5 +109,15 @@ export class DeepSeekModelAdapter {
     const copy = validateRenderProposal(result.value, plan);
     const accepted = copy !== null;
     return { copy, audit: { ...result.audit, schemaSuccess: result.value !== null, businessAccepted: accepted, used: accepted, ...(result.value !== null && !accepted ? { failureReason: "render_business_validation_failed" } : {}) } };
+  }
+
+  async reviewRender(plan: ConversationPlan, copy: RenderedCopy, timeoutMs = 4000): Promise<{ approved: boolean; audit: ModelAudit }> {
+    if (timeoutMs < 500) return { approved: false, audit: this.emptyAudit("render_review", "deadline_exhausted") };
+    const result = await this.invoke("render_review", [
+      { role: "system", content: "你是独立的导购回复审核员。只判断候选回复是否有超出锁定 factBlocks 的赠品、退换、优惠、功效、安全或商品承诺，是否索取未授权的联系方式或地址，是否提出 selectedQuestionFields 之外的问题，是否把未知信息说成已确认。不能依据常识补充品牌政策。只输出 JSON：{\"approved\":boolean,\"reason\":string}。有疑问时 approved=false。" },
+      { role: "user", content: JSON.stringify({ allowedFactBlocks: plan.factBlocks, selectedQuestionFields: plan.policy.selectedQuestionFields, questionGoals: plan.questionGoals, candidateReply: copy.reply, candidateQuestions: copy.questions }) },
+    ], Math.min(4000, timeoutMs), false, true, 350);
+    const approved = Boolean(result.value && typeof result.value === "object" && (result.value as { approved?: unknown }).approved === true);
+    return { approved, audit: { ...result.audit, schemaSuccess: result.value !== null, businessAccepted: approved, used: approved, ...(!approved ? { failureReason: result.audit.failureReason ?? "render_review_rejected" } : {}) } };
   }
 }

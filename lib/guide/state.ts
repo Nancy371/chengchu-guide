@@ -1,3 +1,4 @@
+import { PRODUCTS_BY_SKU } from "./catalog";
 import type { FactValue, LifestyleObservation, SignalKind, SignalValue, SourcedFact, StateDelta, StateField, TurnSignal, TurnUnderstanding, UserState } from "./types";
 
 export const EMPTY_STATE: UserState = { facts: {}, history: [], turn: 0 };
@@ -5,12 +6,45 @@ export const EMPTY_STATE: UserState = { facts: {}, history: [], turn: 0 };
 const fields = new Set<StateField>([
   "intent", "targetSku", "categories", "budget", "budgetScope", "skinType",
   "sensitiveTendency", "currentDiscomfort", "fragrancePreference", "acidExperience",
+  "stinging", "pain", "skinDamage", "otherDiscomfort",
   "existingProducts", "travelNeed", "useOccasions", "texturePreference", "coreConcern", "channelPreference",
   "claimedOnlinePrice", "policyTopics",
 ]);
 
 function update(field: StateField, value: FactValue, text: string, status: "confirmed" | "unclear" = "confirmed") {
   return { field, value, quote: text, status, extractedBy: "local" as const };
+}
+
+const symptomFields = ["stinging", "pain", "skinDamage", "otherDiscomfort"] as const;
+type SymptomField = typeof symptomFields[number];
+
+function symptomUpdates(text: string): StateDelta["updates"] {
+  const compact = text.replace(/\s+/g, "");
+  if (subjectFor(compact) === "other") return [];
+  // A past episode is not a current symptom. A following explicit present-time
+  // clause can still report a new symptom or recovery.
+  const present = /(?:以前|曾经|过去|之前|去年|上次)/.test(compact)
+    ? compact.match(/(?:现在|目前|如今|今天|这次|最近)[^，。；;]*/)?.[0] ?? ""
+    : compact;
+  const result: StateDelta["updates"] = [];
+  const rules: Array<[SymptomField, RegExp, RegExp]> = [
+    ["stinging", /(?:没有|没|无|不)(?:明显)?(?:刺痛|刺疼)|刺痛(?:已经)?(?:好了|消失|恢复)/, /刺痛|刺疼|灼痛/],
+    ["pain", /(?:没有|没|无|不)(?:明显)?(?:疼痛|疼|痛)|(?:疼痛|疼)(?:已经)?(?:好了|消失|恢复)/, /很疼|脸疼|疼痛|还在疼|脸很痛|疼得|有点疼|又疼/],
+    ["skinDamage", /(?:没有|没|无|不)(?:明显)?(?:破损|受损)|(?:破损|受损)(?:已经)?(?:好了|恢复|愈合)/, /皮肤破损|破损|受损|屏障受损/],
+    ["otherDiscomfort", /(?:没有|没|无|不)(?:明显)?(?:不适|不舒服|红肿)|(?:不适|红肿)(?:已经)?(?:好了|消失|恢复)/, /红肿|持续不适|不舒服/],
+  ];
+  const recoveryPattern = /(?:已经|现在|目前|完全)?(?:恢复了?|好了|都好了|没事了?|无不适|没有不适|状态稳定|目前稳定)/;
+  const globalRecovery = /无不适|没有不适/.test(present) ||
+    (!/(?:刺痛|刺疼|破损|受损|疼|痛|红肿|不适)/.test(present) && recoveryPattern.test(present));
+  for (const [field, negative, positive] of rules) {
+    const neg = present.match(negative);
+    const stripped = present.replace(negative, "");
+    const pos = stripped.match(positive);
+    if (pos) result.push(update(field, field === "otherDiscomfort" && /不舒服/.test(pos[0]) && !/红肿|持续/.test(pos[0]) ? "unclear" : true, pos[0], field === "otherDiscomfort" && /不舒服/.test(pos[0]) && !/红肿|持续/.test(pos[0]) ? "unclear" : "confirmed"));
+    else if (neg) result.push(update(field, false, neg[0]));
+    else if (globalRecovery) result.push(update(field, false, present.match(recoveryPattern)?.[0] ?? present));
+  }
+  return result;
 }
 
 export function deterministicExtract(text: string): StateDelta {
@@ -50,19 +84,18 @@ export function deterministicExtract(text: string): StateDelta {
   const claimedPrice = compact.match(/(?:网上|线上|网店).*?[¥￥]?([1-9]\d{1,4})/);
   if (claimedPrice) updates.push(update("claimedOnlinePrice", Number(claimedPrice[1]) * 100, raw));
 
-  if (/偏干|干皮|干燥/.test(compact)) updates.push(update("skinType", "dry", raw));
-  if (/偏油|油皮|容易出油/.test(compact)) updates.push(update("skinType", "oily", raw));
+  const drySkin = /偏干|干皮|干性(?:皮肤|肌肤)|干燥|洗后紧绷/.test(compact);
+  const oilySkin = /偏油|油皮|油性(?:皮肤|肌肤)|(?<!不|没)出油/.test(compact);
+  if (drySkin !== oilySkin) updates.push(update("skinType", drySkin ? "dry" : "oily", raw));
 
   if (/没有敏感|不敏感/.test(compact)) updates.push(update("sensitiveTendency", false, raw));
   else if (/敏感肌|容易敏感|敏感倾向|皮肤敏感/.test(compact)) updates.push(update("sensitiveTendency", true, raw));
 
-  if (/没有不适|无不适|现在没事|目前稳定|状态稳定|没有刺痛|不疼/.test(compact)) {
-    updates.push(update("currentDiscomfort", false, raw));
-  } else if (/很疼|脸疼|刺痛|灼痛|红肿|破损|受损|持续不适|还在疼|现在.*不舒服/.test(compact)) {
-    updates.push(update("currentDiscomfort", true, raw));
-  } else if (/有点不舒服|不太舒服|好像不舒服/.test(compact)) {
-    updates.push(update("currentDiscomfort", "unclear", raw, "unclear"));
-  }
+  const symptoms = symptomUpdates(raw);
+  updates.push(...symptoms);
+  if (symptoms.some((item) => item.value === true)) updates.push(update("currentDiscomfort", true, raw));
+  else if (symptoms.some((item) => item.value === "unclear")) updates.push(update("currentDiscomfort", "unclear", raw, "unclear"));
+  else if (symptoms.length === symptomFields.length && symptoms.every((item) => item.value === false) && /(?:没有不适|无不适|现在没事|目前稳定|状态稳定|已经恢复|完全好了|都好了)/.test(compact)) updates.push(update("currentDiscomfort", false, raw));
 
   if (/必须.*无香|一点香味都没有|不要香味|只要无香|只喜欢无香/.test(compact)) updates.push(update("fragrancePreference", "must_be_fragrance_free", raw));
   else if (/对香味敏感|闻不了香|香味敏感/.test(compact)) updates.push(update("fragrancePreference", "fragrance_sensitive", raw));
@@ -101,7 +134,7 @@ function isExplicitRejection(text: string) {
   return !/(?:还是|改成|改为|只看|看看|想看|想买|推荐|洁面|洗面奶|保湿|面霜|乳液|精华|分装)/.test(text);
 }
 
-export function deterministicUnderstand(text: string): TurnUnderstanding {
+export function deterministicUnderstand(text: string, pendingQuestion?: StateField): TurnUnderstanding {
   const raw = text.trim();
   const compact = raw.replace(/\s+/g, "");
   const subject = subjectFor(compact);
@@ -134,7 +167,13 @@ export function deterministicUnderstand(text: string): TurnUnderstanding {
   if (/不喜欢黏|讨厌黏|不要黏|喜欢轻薄|喜欢清爽/.test(compact)) lifestyle.push({ kind: "texture_preference", value: "lightweight", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   if (/不想重复买|避免重复买|已有.*不再买|只想买单品|以后.*单品/.test(compact)) lifestyle.push({ kind: "purchase_preference", value: /单品/.test(compact) ? "single_item" : "avoid_duplicate", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
 
-  return { delta: deterministicExtract(text), signals, lifestyle };
+  const delta = deterministicExtract(text);
+  if (pendingQuestion === "skinType" && !delta.updates.some((item) => item.field === "skinType")) {
+    const answer = compact.replace(/[，。！？?!,.]/g, "");
+    if (/^(?:我)?(?:是|偏|比较)?干(?:的|皮)?$/.test(answer)) delta.updates.push(update("skinType", "dry", raw));
+    else if (/^(?:我)?(?:是|偏|比较)?油(?:的|皮)?$/.test(answer)) delta.updates.push(update("skinType", "oily", raw));
+  }
+  return { delta, signals, lifestyle };
 }
 
 export function validateDelta(delta: unknown, text: string): StateDelta | null {
@@ -143,10 +182,41 @@ export function validateDelta(delta: unknown, text: string): StateDelta | null {
   for (const candidate of (delta as StateDelta).updates) {
     if (!candidate || !fields.has(candidate.field) || typeof candidate.quote !== "string") continue;
     if (!candidate.quote || !text.includes(candidate.quote)) continue;
-    if (!["string", "number", "boolean", "object"].includes(typeof candidate.value)) continue;
+    if (!validFieldValue(candidate.field, candidate.value)) continue;
+    const local = deterministicExtract(candidate.quote).updates.find((item) => item.field === candidate.field);
+    // Every accepted field needs evidence in the quoted words, including
+    // non-safety preferences. Unknown wording stays unconfirmed.
+    if (!local || JSON.stringify(local.value) !== JSON.stringify(candidate.value)) continue;
     valid.push({ ...candidate, extractedBy: "model", status: candidate.status === "unclear" ? "unclear" : "confirmed" });
   }
   return { updates: valid, extraction: "model", warnings: [] };
+}
+
+function validFieldValue(field: StateField, value: unknown): value is FactValue {
+  const choices: Partial<Record<StateField, readonly string[]>> = {
+    intent: ["recommend", "price", "policy", "clarify"],
+    budgetScope: ["total", "current_item"],
+    skinType: ["dry", "oily"],
+    fragrancePreference: ["must_be_fragrance_free", "fragrance_sensitive", "accepts_fragrance"],
+    coreConcern: ["roughness", "fresh_texture", "simple_routine"],
+    texturePreference: ["lightweight", "avoid_tightness"],
+    channelPreference: ["online", "offline"],
+  };
+  if (field === "budget" || field === "claimedOnlinePrice") return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  if (["sensitiveTendency", "acidExperience", "travelNeed"].includes(field)) return typeof value === "boolean";
+  if (field === "currentDiscomfort" || symptomFields.includes(field as SymptomField)) return value === true || value === false || value === "unclear";
+  if (field === "targetSku") return typeof value === "string" && Object.hasOwn(PRODUCTS_BY_SKU, value);
+  if (["categories", "existingProducts", "useOccasions", "policyTopics"].includes(field)) {
+    const allowed: Record<string, string[]> = {
+      categories: ["cleanser", "moisturizer", "serum", "travel"],
+      existingProducts: ["cleanser", "moisturizer", "serum"],
+      useOccasions: ["morning_rush", "exercise", "travel"],
+      policyTopics: ["promotion", "gift", "online_price", "return", "authorization"],
+    };
+    return Array.isArray(value) && value.length > 0 && value.every((entry) => typeof entry === "string" && allowed[field].includes(entry));
+  }
+  if (choices[field]) return typeof value === "string" && choices[field].includes(value);
+  return false;
 }
 
 const signalKinds = new Set<SignalKind>(["emotion", "communication", "lifestyle"]);
@@ -197,16 +267,42 @@ export function mergeDeltas(primary: StateDelta | null, fallback: StateDelta): S
 export function applyDelta(state: UserState, delta: StateDelta): UserState {
   const turn = state.turn + 1;
   const facts = { ...state.facts };
+  const history = [...state.history];
+  const nextCategories = delta.updates.find((item) => item.field === "categories")?.value;
+  if (Array.isArray(nextCategories) && facts.targetSku && !nextCategories.includes(PRODUCTS_BY_SKU[String(facts.targetSku.value)]?.category)) {
+    history.push(facts.targetSku);
+    delete facts.targetSku;
+  }
   if (!delta.updates.some((item) => item.field === "policyTopics")) delete facts.policyTopics;
   if (!delta.updates.some((item) => item.field === "claimedOnlinePrice")) delete facts.claimedOnlinePrice;
-  const history = [...state.history];
+  const explicitRecovery = delta.updates.some((item) => item.field === "currentDiscomfort" && item.value === false && /恢复|好了|没事|无不适|没有不适|稳定/.test(item.quote));
+  let unresolvedLegacyDiscomfort = state.unresolvedLegacyDiscomfort ??
+    (state.facts.currentDiscomfort?.value === true && !symptomFields.some((field) => state.facts[field]) ? true : false);
+  if (explicitRecovery) unresolvedLegacyDiscomfort = false;
   for (const item of delta.updates) {
+    if (item.field === "currentDiscomfort") continue; // The aggregate is derived, never model-owned.
+    if (item.field === "targetSku" && Array.isArray(nextCategories) && !nextCategories.includes(PRODUCTS_BY_SKU[String(item.value)]?.category)) continue;
     const next: SourcedFact = { ...item, turn };
     const previous = facts[item.field];
     if (previous && JSON.stringify(previous.value) !== JSON.stringify(next.value)) history.push(previous);
     facts[item.field] = next;
   }
-  return { facts, history, turn };
+  const symptomFacts = symptomFields.map((field) => facts[field]).filter((item): item is SourcedFact => Boolean(item));
+  const active = symptomFacts.filter((item) => item.value === true);
+  const uncertain = symptomFacts.filter((item) => item.value === "unclear");
+  const hadSpecificRisk = symptomFields.some((field) => state.facts[field]?.value === true || state.facts[field]?.value === "unclear");
+  const derived = unresolvedLegacyDiscomfort || active.length ? true : uncertain.length ? "unclear" :
+    explicitRecovery || (hadSpecificRisk && symptomFacts.length > 0 && symptomFacts.every((item) => item.value === false)) ? false : undefined;
+  if (derived !== undefined) {
+    const source = active.at(-1) ?? uncertain.at(-1) ??
+      (unresolvedLegacyDiscomfort ? state.facts.currentDiscomfort : undefined) ??
+      delta.updates.find((item) => item.field === "currentDiscomfort") ?? symptomFacts.at(-1);
+    const sourceTurn = source && "turn" in source && typeof source.turn === "number" ? source.turn : turn;
+    const next: SourcedFact = { field: "currentDiscomfort", value: derived, quote: source?.quote ?? state.facts.currentDiscomfort?.quote ?? "", turn: sourceTurn, status: derived === "unclear" ? "unclear" : "confirmed", extractedBy: source?.extractedBy ?? "local" };
+    if (facts.currentDiscomfort && facts.currentDiscomfort.value !== derived) history.push(facts.currentDiscomfort);
+    facts.currentDiscomfort = next;
+  } else delete facts.currentDiscomfort;
+  return { facts, history, turn, ...(unresolvedLegacyDiscomfort ? { unresolvedLegacyDiscomfort: true } : {}) };
 }
 
 export function fact<T extends FactValue>(state: UserState, field: StateField): T | undefined {

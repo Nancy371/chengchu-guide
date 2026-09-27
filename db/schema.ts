@@ -5,6 +5,7 @@ export const sessions = sqliteTable("sessions", {
   userId: text("user_id"),
   stateJson: text("state_json").notNull(),
   inputVersion: integer("input_version").notNull().default(0),
+  appliedInputVersion: integer("applied_input_version").notNull().default(0),
   stateVersion: integer("state_version").notNull().default(0),
   resultJson: text("result_json"),
   createdAt: integer("created_at").notNull(),

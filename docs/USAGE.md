@@ -8,8 +8,8 @@
 
 ## 规则如何使用
 
-1. 顾客原话先形成带来源和轮次的状态增量。
-2. Schema 与语义校验拒绝没有原话依据的模型字段。
+1. `verifiedState.update` 将本地识别、模型增量、引文校验和状态归并收在同一入口；超时也按同一规则本地重放。
+2. Schema 与语义校验拒绝没有当轮逐字原话依据、或与原话含义相反的模型字段。刺痛、疼痛、破损及其他不适分别保留来源和轮次，再计算当前不适总状态。
 3. 本地规则为每个 SKU 生成 `ProductFit`，区分可推荐、待补信息和已排除。
 4. 普通场景直接决策；只有偏好冲突或安全语义歧义进入思考模型。
 5. 最终回复只能使用商品目录和规则已经允许的事实，金额由本地整数工具计算。
@@ -17,6 +17,7 @@
 7. 决策完成后由 Conversation Skill Router 选择承接、节奏和生活场景行为；表达模型只能使用已批准事实块，校验失败时回退本地模板。
 
 当前不适优先于销售动作；P201 果酸产品要求有相关经验、皮肤状态稳定且不属于敏感倾向。香味敏感只降低带香产品优先级，明确“必须无香”才作为硬约束。
+局部否定只更正对应症状；“没有刺痛，但皮肤破损”仍暂停推荐。旧会话的未解除不适继续按安全风险处理，明确恢复后才解除。
 
 ## 输出内容
 
@@ -56,4 +57,7 @@
 ```bash
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute site-creator-d1 --local --config dist/server/wrangler.json --persist-to .wrangler/state --file dist/.openai/drizzle/0000_same_retro_girl.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute site-creator-d1 --local --config dist/server/wrangler.json --persist-to .wrangler/state --file dist/.openai/drizzle/0001_gorgeous_surge.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute site-creator-d1 --local --config dist/server/wrangler.json --persist-to .wrangler/state --file dist/.openai/drizzle/0002_magenta_thor_girl.sql
 ```
+
+已有本地数据库只执行尚未应用的迁移；`0002` 会为现有会话初始化已应用输入版本。启动本地服务后，可运行 `node scripts/verify-local-api.mjs` 验证追问答案、刷新、停推、换品类和并发输入。

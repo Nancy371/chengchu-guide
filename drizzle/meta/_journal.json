@@ -15,6 +15,13 @@
       "when": 1790436197441,
       "tag": "0001_gorgeous_surge",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790514059324,
+      "tag": "0002_magenta_thor_girl",
+      "breakpoints": true
     }
   ]
 }

@@ -14,6 +14,47 @@ test("dry cleanser route recommends P101 from explicit skin fact", () => {
   assert.equal(result.recommendations[0]?.sku, "P101");
 });
 
+test("full skin-type answers are retained without claiming safety", () => {
+  for (const phrase of ["我是干皮", "我是干性皮肤", "我是干性肌肤"]) {
+    const state = stateFrom("想买洗面奶", phrase);
+    assert.equal(fact(state, "skinType"), "dry");
+    assert.equal(fact(state, "currentDiscomfort"), undefined);
+    assert.equal(decide(state).action, "recommend");
+  }
+  for (const phrase of ["我是油皮", "我是油性皮肤", "我是油性肌肤"]) {
+    const state = stateFrom("想买洗面奶", phrase);
+    assert.equal(fact(state, "skinType"), "oily");
+    assert.notEqual(decide(state).questionFields[0], "skinType");
+  }
+});
+
+test("a negated symptom cannot hide active damage, and partial negation cannot clear a safety stop", () => {
+  const mixed = stateFrom("我想买果酸，我没有刺痛但皮肤破损，用过果酸，也不敏感");
+  assert.equal(fact(mixed, "currentDiscomfort"), true);
+  assert.equal(decide(mixed).action, "safety");
+  assert.equal(decide(stateFrom("我现在脸很疼", "我没有刺痛")).action, "safety");
+  assert.notEqual(decide(stateFrom("我现在脸很疼", "已经恢复了，想买洗面奶，我是干皮")).action, "safety");
+});
+
+test("a model cannot falsify safety or skin type using an unrelated literal quote", () => {
+  const text = "我现在脸很疼，想买洗面奶";
+  const forged: StateDelta = { extraction: "model", warnings: [], updates: [
+    { field: "currentDiscomfort", value: false, quote: "我现在脸很疼", status: "confirmed", extractedBy: "model" },
+    { field: "skinType", value: "dry", quote: "想买洗面奶", status: "confirmed", extractedBy: "model" },
+  ] };
+  assert.deepEqual(validateDelta(forged, text)?.updates, []);
+});
+
+test("switching category clears an old SKU and decision ignores incompatible stored SKU", () => {
+  const first = stateFrom("P101 多少钱");
+  const switched = applyDelta(first, deterministicExtract("我是干皮，现在只买保湿面霜"));
+  assert.equal(fact(switched, "targetSku"), undefined);
+  assert.equal(switched.history.some((item) => item.field === "targetSku" && item.value === "P101"), true);
+  assert.equal(decide(switched).recommendations.every((item) => item.sku.startsWith("P2")), true);
+  const leaked = { ...switched, facts: { ...switched.facts, targetSku: first.facts.targetSku } };
+  assert.equal(decide(leaked).recommendations.every((item) => item.sku.startsWith("P2")), true);
+});
+
 test("bundle totals are deterministic and budget conflict is explicit", () => {
   const result = decide(stateFrom("预算 400，想配洁面和保湿", "我是干皮"));
   assert.equal(result.action, "budget_conflict");
