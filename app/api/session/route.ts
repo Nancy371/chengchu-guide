@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { D1GuideRepository } from "@/lib/guide/repository";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +12,8 @@ function sessionId(request: NextRequest) {
 
 export async function POST() {
   try {
-    const session = await new D1GuideRepository().createSession();
+    const user = await getChatGPTUser();
+    const session = await new D1GuideRepository().createSession(user?.userId ?? null);
     const response = NextResponse.json({ session, history: [] });
     response.cookies.set(COOKIE, session.id, { httpOnly: true, sameSite: "lax", secure: secureCookie, path: "/", maxAge: 24 * 60 * 60 });
     return response;
@@ -22,12 +24,13 @@ export async function POST() {
 
 export async function GET(request: NextRequest) {
   try {
+    const user = await getChatGPTUser();
     const id = sessionId(request);
     if (!id) return NextResponse.json({ session: null, history: [] });
     const repository = new D1GuideRepository();
-    const session = await repository.getSession(id);
+    const session = await repository.getSession(id, user?.userId ?? null);
     if (!session) return NextResponse.json({ session: null, history: [] });
-    return NextResponse.json({ session, history: await repository.getHistory(id) });
+    return NextResponse.json({ session, history: await repository.getHistory(id, user?.userId ?? null) });
   } catch {
     return NextResponse.json({ error: "暂时无法恢复会话。" }, { status: 503 });
   }
@@ -36,8 +39,9 @@ export async function GET(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const response = NextResponse.json({ ok: true });
   try {
+    const user = await getChatGPTUser();
     const id = sessionId(request);
-    if (id) await new D1GuideRepository().deleteSession(id);
+    if (id) await new D1GuideRepository().deleteSession(id, user?.userId ?? null);
   } finally {
     response.cookies.set(COOKIE, "", { httpOnly: true, sameSite: "lax", secure: secureCookie, path: "/", maxAge: 0 });
   }

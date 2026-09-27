@@ -11,6 +11,8 @@ export type StateField =
   | "acidExperience"
   | "existingProducts"
   | "travelNeed"
+  | "useOccasions"
+  | "texturePreference"
   | "coreConcern"
   | "channelPreference"
   | "claimedOnlinePrice"
@@ -38,6 +40,84 @@ export interface UserState {
   history: SourcedFact[];
   pendingQuestion?: string;
   turn: number;
+}
+
+export type SignalKind = "emotion" | "communication" | "lifestyle";
+export type SignalValue =
+  | "worried" | "frustrated" | "hesitant" | "happy"
+  | "price_objection" | "reject" | "correction" | "hurry" | "direct_answer"
+  | "morning_rush" | "exercise" | "travel" | "simple_routine" | "existing_routine" | "sensory_discomfort";
+
+export interface TurnSignal {
+  kind: SignalKind;
+  value: SignalValue;
+  quote: string;
+  explicit: boolean;
+  subject: "self" | "other" | "unknown";
+  temporal?: "current" | "historical" | "unclear";
+}
+
+export type HabitKind = "routine_preference" | "frequent_travel" | "fragrance_preference" | "texture_preference" | "purchase_preference";
+
+export interface LifestyleObservation {
+  kind: HabitKind;
+  value: string | boolean;
+  quote: string;
+  scope: "turn" | "session" | "durable";
+  explicit: boolean;
+  subject: "self" | "other" | "unknown";
+}
+
+export interface TurnUnderstanding {
+  delta: StateDelta;
+  signals: TurnSignal[];
+  lifestyle: LifestyleObservation[];
+}
+
+export interface HabitMemory {
+  id: string;
+  kind: HabitKind;
+  value: string | boolean;
+  sourceTurn: number;
+  updatedAt: number;
+  expiresAt: number;
+}
+
+export interface MemoryProfile {
+  authenticated: boolean;
+  enabled: boolean;
+  version: number;
+  memories: HabitMemory[];
+  account?: { displayName: string; email: string };
+}
+
+export type ConversationTaskSkill = "clarification" | "recommendation" | "budget_conflict" | "price_objection" | "discomfort" | "decision_support" | "conversation_repair";
+export type ConversationBehaviorSkill = "emotion_acknowledgement" | "pace_adaptation" | "routine_fit" | "existing_routine_respect" | "occasion_fit" | "sensory_preference" | "gentle_recall" | "respectful_close";
+export type ConversationAct = "acknowledge" | "reduce_pressure" | "explain_reason" | "state_fact" | "state_limit" | "offer_tradeoff" | "ask_question" | "repair_understanding" | "close_respectfully";
+
+export interface ConversationPolicy {
+  taskSkill: ConversationTaskSkill;
+  behaviorSkills: ConversationBehaviorSkill[];
+  userEmotion: "neutral" | "worried" | "frustrated" | "hesitant" | "happy" | "discomfort";
+  relationshipStage: "early" | "exploring" | "evaluating" | "repair";
+  nextAction: DecisionAction;
+  conversationActs: ConversationAct[];
+  tone: "light_warm" | "calm_direct";
+  pressureLevel: "low";
+  selectedQuestionFields: StateField[];
+  responseLength: "short" | "medium";
+  shouldAcknowledge: boolean;
+  shouldExplainReason: boolean;
+  emojiPolicy: "optional_one" | "none";
+  acknowledgedSignal?: TurnSignal;
+  usedMemory?: Pick<HabitMemory, "id" | "kind" | "value">;
+}
+
+export interface RenderMetadata {
+  source: "model" | "template";
+  validationPassed: boolean;
+  fallbackReason?: string;
+  factBlockIds: string[];
 }
 
 export interface Product {
@@ -83,7 +163,7 @@ export interface Recommendation {
 }
 
 export interface ModelAudit {
-  stage: "extract" | "reason" | "normalize";
+  stage: "extract" | "reason" | "normalize" | "render";
   model: string;
   modelInvoked: boolean;
   parseSuccess: boolean;
@@ -101,6 +181,7 @@ export type DecisionAction =
   | "policy_unknown"
   | "budget_conflict"
   | "safety"
+  | "close"
   | "unavailable";
 
 export interface DecisionDraft {
@@ -115,6 +196,7 @@ export interface DecisionDraft {
   limitations: string[];
   totalFen?: number;
   budgetGapFen?: number;
+  pricingMode?: "single" | "bundle" | "alternatives";
 }
 
 export interface DecisionResult extends DecisionDraft {
@@ -122,6 +204,10 @@ export interface DecisionResult extends DecisionDraft {
   questions: string[];
   state: UserState;
   audits: ModelAudit[];
+  turnSignals: TurnSignal[];
+  lifestyle: LifestyleObservation[];
+  conversationPolicy: ConversationPolicy;
+  render: RenderMetadata;
   versions: {
     input: number;
     state: number;
@@ -131,6 +217,7 @@ export interface DecisionResult extends DecisionDraft {
 
 export interface SessionRecord {
   id: string;
+  userId: string | null;
   state: UserState;
   inputVersion: number;
   stateVersion: number;

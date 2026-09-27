@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ClipboardCheck, RotateCcw, ShieldCheck, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { PreferencesDrawer } from "@/components/preferences-drawer";
 import {
   Sheet,
   SheetContent,
@@ -70,6 +71,8 @@ const fieldLabels: Record<string, string> = {
   acidExperience: "果酸经验",
   existingProducts: "已有产品",
   travelNeed: "旅行需求",
+  useOccasions: "使用场景",
+  texturePreference: "质地偏好",
   coreConcern: "核心诉求",
   channelPreference: "渠道偏好",
   claimedOnlinePrice: "用户提到的线上价",
@@ -93,7 +96,37 @@ const valueLabels: Record<string, string> = {
   true: "是",
   false: "否",
   unclear: "待确认",
+  morning_rush: "早晨赶时间",
+  exercise: "运动后",
+  simple_routine: "希望步骤简单",
+  lightweight: "偏好轻薄、不黏",
+  simple: "希望步骤简单",
+  single_item: "倾向单品购买",
+  avoid_duplicate: "避免重复购买",
 };
+
+const skillLabels: Record<string, string> = {
+  clarification: "温和追问",
+  recommendation: "推荐与取舍",
+  budget_conflict: "预算取舍",
+  price_objection: "价格异议",
+  discomfort: "不适停推",
+  decision_support: "比较决策",
+  conversation_repair: "理解纠正",
+  emotion_acknowledgement: "情绪承接",
+  pace_adaptation: "节奏适配",
+  routine_fit: "精简步骤",
+  existing_routine_respect: "尊重已有护理",
+  occasion_fit: "贴合使用场景",
+  sensory_preference: "感受偏好确认",
+  gentle_recall: "相关偏好回忆",
+  respectful_close: "尊重收尾",
+};
+
+function optionMemoryLabel(kind: string, value: string | boolean) {
+  const kindLabel: Record<string, string> = { routine_preference: "护理步骤", frequent_travel: "出行习惯", fragrance_preference: "香味偏好", texture_preference: "质地偏好", purchase_preference: "购买习惯" };
+  return `${kindLabel[kind] ?? kind}：${valueLabels[String(value)] ?? String(value)}`;
+}
 
 function displayValue(value: FactValue, field?: string) {
   if (field === "budget" || field === "claimedOnlinePrice") return `¥${Number(value) / 100}`;
@@ -119,7 +152,7 @@ function RecommendationRows({ result }: { result: DecisionResult }) {
           <strong>¥{item.priceFen / 100}</strong>
         </article>
       ))}
-      {result.totalFen && result.recommendations.length > 1 ? (
+      {result.pricingMode === "bundle" && result.totalFen ? (
         <div className="bundle-total"><span>组合总价</span><strong>¥{result.totalFen / 100}</strong></div>
       ) : null}
     </div>
@@ -190,13 +223,28 @@ function EvidenceDrawer({ result }: { result: DecisionResult | null }) {
                   </div>
                 </AccordionContent>
               </AccordionItem>
+              {result.conversationPolicy ? (
+                <AccordionItem value="conversation">
+                  <AccordionTrigger>对话策略</AccordionTrigger>
+                  <AccordionContent>
+                    <div className="strategy-list">
+                      <p><span>主任务</span><strong>{skillLabels[result.conversationPolicy.taskSkill] ?? result.conversationPolicy.taskSkill}</strong></p>
+                      <p><span>组合行为</span><strong>{result.conversationPolicy.behaviorSkills.length ? result.conversationPolicy.behaviorSkills.map((skill) => skillLabels[skill] ?? skill).join("、") : "保持直接"}</strong></p>
+                      {result.conversationPolicy.acknowledgedSignal?.explicit ? <p><span>承接依据</span><q>{result.conversationPolicy.acknowledgedSignal.quote}</q></p> : null}
+                      {result.conversationPolicy.usedMemory ? <p><span>使用偏好</span><strong>{optionMemoryLabel(result.conversationPolicy.usedMemory.kind, result.conversationPolicy.usedMemory.value)}</strong></p> : null}
+                      <p><span>表达来源</span><strong>{result.render?.source === "model" ? "受控 DeepSeek 表达" : "本地安全模板"}</strong></p>
+                      {result.questionFields.length ? <p><span>提问原因</span><strong>{result.routeReason}</strong></p> : null}
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              ) : null}
               <AccordionItem value="audit">
                 <AccordionTrigger>运行校验</AccordionTrigger>
                 <AccordionContent>
                   <div className="audit-summary">
                     <p>输入版本 <strong>{result.versions.input}</strong> · 状态版本 <strong>{result.versions.state}</strong></p>
                     <p>知识版本 <strong>{result.versions.knowledge}</strong></p>
-                    {result.audits.map((audit, index) => (
+                    {(result.audits ?? []).map((audit, index) => (
                       <p key={`${audit.stage}-${index}`}>{audit.stage} · {audit.modelInvoked ? `${audit.model} / ${audit.used ? "已采用" : "未采用"}` : "本地降级"} · {audit.latencyMs}ms</p>
                     ))}
                     {result.limitations.map((item) => <p className="limitation" key={item}>限制：{item}</p>)}
@@ -305,7 +353,7 @@ export default function Home() {
         return {
           content: [{
             type: "text",
-            text: result ? JSON.stringify({ action: result.action, reply: result.reply, recommendations: result.recommendations, totalFen: result.totalFen, limitations: result.limitations, versions: result.versions }) : JSON.stringify({ error: "本轮未能生成有效结果" }),
+            text: result ? JSON.stringify({ action: result.action, reply: result.reply, recommendations: result.recommendations, totalFen: result.totalFen, limitations: result.limitations, conversationSkill: result.conversationPolicy?.taskSkill, renderSource: result.render?.source, versions: result.versions }) : JSON.stringify({ error: "本轮未能生成有效结果" }),
           }],
         };
       },
@@ -322,6 +370,7 @@ export default function Home() {
         </a>
         <div className="header-actions">
           <span className="service-state"><i /> 资料规则已加载</span>
+          <PreferencesDrawer />
           <Button variant="ghost" className="reset-button" onClick={resetSession} disabled={loading || sending}><RotateCcw /> 新咨询</Button>
           <EvidenceDrawer result={latestResult} />
         </div>
@@ -337,7 +386,7 @@ export default function Home() {
               return <div className="brief-fact" key={field}><span>{fieldLabels[field] ?? field}</span><strong>{displayValue(item.value, field)}</strong></div>;
             }) : <div className="empty-brief"><Sparkles aria-hidden="true" /><p>说说想买什么，我会从最影响选择的信息开始问。</p></div>}
           </div>
-          <div className="privacy-note"><ShieldCheck aria-hidden="true" /><p>会话保留 24 小时。您可以随时点击“新咨询”清除。</p></div>
+          <div className="privacy-note"><ShieldCheck aria-hidden="true" /><p>会话保留 24 小时。跨设备习惯记忆需登录后单独开启，可在“我的偏好”中管理。</p></div>
         </aside>
 
         <section className="conversation" id="main-conversation" aria-busy={sending || loading}>

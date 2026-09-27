@@ -1,6 +1,6 @@
 import { BUNDLES, KNOWLEDGE_VERSION, MANUAL_SOURCE, PRODUCTS, PRODUCTS_BY_SKU, UNSUPPORTED_POLICY_TOPICS } from "./catalog";
 import { fact } from "./state";
-import type { DecisionDraft, EvidenceItem, ProductFit, Recommendation, StateField, UserState } from "./types";
+import type { DecisionDraft, EvidenceItem, HabitMemory, ProductFit, Recommendation, StateField, UserState } from "./types";
 
 function evidence(id: string, label: string, detail: string, status: EvidenceItem["status"] = "supported"): EvidenceItem {
   return { id, label, detail, source: MANUAL_SOURCE, status };
@@ -25,12 +25,16 @@ function activeCategories(state: UserState): string[] {
   return categories;
 }
 
-export function compileProductFits(state: UserState): ProductFit[] {
+function memoryValue<T extends string | boolean>(memories: HabitMemory[], kind: HabitMemory["kind"]): T | undefined {
+  return memories.find((memory) => memory.kind === kind)?.value as T | undefined;
+}
+
+export function compileProductFits(state: UserState, memories: HabitMemory[] = []): ProductFit[] {
   const categories = activeCategories(state);
   const skin = fact<string>(state, "skinType");
   const sensitive = fact<boolean>(state, "sensitiveTendency");
   const discomfort = fact<boolean | string>(state, "currentDiscomfort");
-  const fragrance = fact<string>(state, "fragrancePreference");
+  const fragrance = fact<string>(state, "fragrancePreference") ?? memoryValue<string>(memories, "fragrance_preference");
   const acidExperience = fact<boolean>(state, "acidExperience");
   const travel = fact<boolean>(state, "travelNeed");
 
@@ -127,8 +131,8 @@ function baseDraft(fits: ProductFit[]): DecisionDraft {
   };
 }
 
-export function decide(state: UserState): DecisionDraft {
-  const fits = compileProductFits(state);
+export function decide(state: UserState, memories: HabitMemory[] = []): DecisionDraft {
+  const fits = compileProductFits(state, memories);
   const draft = baseDraft(fits);
   const discomfort = fact<boolean | string>(state, "currentDiscomfort");
   const intent = fact<string>(state, "intent");
@@ -137,7 +141,7 @@ export function decide(state: UserState): DecisionDraft {
   const categories = activeCategories(state);
   const budget = fact<number>(state, "budget");
   const skin = fact<string>(state, "skinType");
-  const fragrance = fact<string>(state, "fragrancePreference");
+  const fragrance = fact<string>(state, "fragrancePreference") ?? memoryValue<string>(memories, "fragrance_preference");
 
   if (discomfort === true) {
     return {
@@ -179,6 +183,23 @@ export function decide(state: UserState): DecisionDraft {
     return { ...draft, questionFields: ["categories"], routeReason: "尚未确认需要的商品品类" };
   }
 
+  if (budget !== undefined && categories.length === 1) {
+    const products = PRODUCTS.filter((product) => product.category === categories[0]);
+    const minimum = Math.min(...products.map((product) => product.priceFen));
+    if (Number.isFinite(minimum) && budget < minimum) {
+      return {
+        ...draft,
+        action: "budget_conflict",
+        routeReason: "当前品类的手册最低标价已超过预算",
+        evidence: products.map((product) => evidence(`price:${product.sku}`, `${product.sku} 手册标价`, `¥${product.priceFen / 100}`)),
+        limitations: ["当前目录没有预算内候选，不建议为了购买而自动提高预算"],
+        totalFen: minimum,
+        budgetGapFen: minimum - budget,
+        pricingMode: "single",
+      };
+    }
+  }
+
   const wantsBundle = categories.includes("cleanser") && categories.includes("moisturizer");
   if (wantsBundle) {
     if (budget === undefined) return { ...draft, questionFields: ["budget"], routeReason: "组合推荐前需先确认总预算" };
@@ -190,37 +211,38 @@ export function decide(state: UserState): DecisionDraft {
     }
     const totalFen = totalFor(bundle);
     if (budget < totalFen) {
-      return { ...draft, action: "budget_conflict", routeReason: "确定性算价显示组合超过预算", candidateSkus: [...bundle], recommendations: bundle.map((sku) => productRecommendation(sku, fits.find((fit) => fit.sku === sku))), evidence: [evidence(`bundle:${bundle.join("+")}`, "组合算价", bundle.map((sku) => `${sku} ¥${PRODUCTS_BY_SKU[sku].priceFen / 100}`).join(" + ") + ` = ¥${totalFen / 100}`)], totalFen, budgetGapFen: totalFen - budget };
+      return { ...draft, action: "budget_conflict", routeReason: "确定性算价显示组合超过预算", candidateSkus: [...bundle], recommendations: bundle.map((sku) => productRecommendation(sku, fits.find((fit) => fit.sku === sku))), evidence: [evidence(`bundle:${bundle.join("+")}`, "组合算价", bundle.map((sku) => `${sku} ¥${PRODUCTS_BY_SKU[sku].priceFen / 100}`).join(" + ") + ` = ¥${totalFen / 100}`)], totalFen, budgetGapFen: totalFen - budget, pricingMode: "bundle" };
     }
-    return { ...draft, action: "recommend", routeReason: "组合满足手册适用条件且在预算内", candidateSkus: [...bundle], recommendations: bundle.map((sku) => productRecommendation(sku, fits.find((fit) => fit.sku === sku))), evidence: [evidence(`bundle:${bundle.join("+")}`, "组合算价", bundle.map((sku) => `${sku} ¥${PRODUCTS_BY_SKU[sku].priceFen / 100}`).join(" + ") + ` = ¥${totalFen / 100}`)], totalFen };
+    return { ...draft, action: "recommend", routeReason: "组合满足手册适用条件且在预算内", candidateSkus: [...bundle], recommendations: bundle.map((sku) => productRecommendation(sku, fits.find((fit) => fit.sku === sku))), evidence: [evidence(`bundle:${bundle.join("+")}`, "组合算价", bundle.map((sku) => `${sku} ¥${PRODUCTS_BY_SKU[sku].priceFen / 100}`).join(" + ") + ` = ¥${totalFen / 100}`)], totalFen, pricingMode: "bundle" };
   }
 
   if (categories.includes("serum")) {
     const fit = fits.find((item) => item.sku === "P201")!;
     if (fit.status === "excluded") return { ...draft, action: "unavailable", routeReason: "P201 未通过安全或经验门槛", evidence: fit.evidence, limitations: fit.blockers };
     if (fit.status === "needs_information") return { ...draft, questionFields: questionsFor(fit.missing as StateField[]), routeReason: "讨论果酸前需确认使用经验与皮肤状态", evidence: fit.evidence };
-    return { ...draft, action: "recommend", routeReason: "P201 满足使用经验和当前状态条件", candidateSkus: ["P201"], recommendations: [productRecommendation("P201", fit)], evidence: fit.evidence, totalFen: PRODUCTS_BY_SKU.P201.priceFen };
+    return { ...draft, action: "recommend", routeReason: "P201 满足使用经验和当前状态条件", candidateSkus: ["P201"], recommendations: [productRecommendation("P201", fit)], evidence: fit.evidence, totalFen: PRODUCTS_BY_SKU.P201.priceFen, pricingMode: "single" };
   }
 
   if (categories.includes("travel")) {
     const fit = fits.find((item) => item.sku === "P301")!;
-    return { ...draft, action: "recommend", routeReason: "旅行携带需求明确", candidateSkus: ["P301"], recommendations: [productRecommendation("P301", fit)], evidence: fit.evidence, totalFen: PRODUCTS_BY_SKU.P301.priceFen };
+    return { ...draft, action: "recommend", routeReason: "旅行携带需求明确", candidateSkus: ["P301"], recommendations: [productRecommendation("P301", fit)], evidence: fit.evidence, totalFen: PRODUCTS_BY_SKU.P301.priceFen, pricingMode: "single" };
   }
 
   const category = categories[0] as "cleanser" | "moisturizer";
   if (!skin) return { ...draft, questionFields: ["skinType"], routeReason: "肤质会改变当前品类的优先候选" };
   if (skin === "oily" && fragrance === undefined) return { ...draft, questionFields: ["fragrancePreference"], routeReason: "偏油候选带香，需要确认香味偏好" };
 
-  const eligible = fits.filter((fit) => PRODUCTS_BY_SKU[fit.sku].category === category && fit.status === "eligible").sort((a, b) => b.score - a.score || PRODUCTS_BY_SKU[a.sku].priceFen - PRODUCTS_BY_SKU[b.sku].priceFen);
+  const eligible = fits.filter((fit) => PRODUCTS_BY_SKU[fit.sku].category === category && fit.status === "eligible" && (budget === undefined || PRODUCTS_BY_SKU[fit.sku].priceFen <= budget)).sort((a, b) => b.score - a.score || PRODUCTS_BY_SKU[a.sku].priceFen - PRODUCTS_BY_SKU[b.sku].priceFen);
   if (!eligible.length) return { ...draft, action: "unavailable", routeReason: "当前硬约束下没有完全匹配的候选", limitations: ["不会把未获手册支持的适用性补成推荐"] };
   const selected = eligible.slice(0, 2);
-  return { ...draft, action: "recommend", routeReason: "候选已通过资格门禁并按明确偏好排序", candidateSkus: selected.map((item) => item.sku), recommendations: selected.map((fit) => productRecommendation(fit.sku, fit)), evidence: selected.flatMap((fit) => fit.evidence), totalFen: PRODUCTS_BY_SKU[selected[0].sku].priceFen };
+  return { ...draft, action: "recommend", routeReason: "候选已通过资格门禁并按明确偏好排序", candidateSkus: selected.map((item) => item.sku), recommendations: selected.map((fit) => productRecommendation(fit.sku, fit)), evidence: selected.flatMap((fit) => fit.evidence), ...(selected.length === 1 ? { totalFen: PRODUCTS_BY_SKU[selected[0].sku].priceFen, pricingMode: "single" as const } : { pricingMode: "alternatives" as const }) };
 }
 
-export function applyReasoningProposal(draft: DecisionDraft, proposal: unknown): DecisionDraft {
+export function applyReasoningProposal(draft: DecisionDraft, proposal: unknown, state?: UserState): DecisionDraft {
   if (!proposal || typeof proposal !== "object") return { ...draft, route: "degraded", routeReason: `${draft.routeReason}；推理提案无有效结构` };
   const raw = proposal as { candidateSkus?: unknown; questionFields?: unknown };
-  const allowed = new Set(draft.productFits.filter((fit) => fit.status !== "excluded").map((fit) => fit.sku));
+  const budget = state ? fact<number>(state, "budget") : undefined;
+  const allowed = new Set(draft.productFits.filter((fit) => fit.status !== "excluded" && (budget === undefined || PRODUCTS_BY_SKU[fit.sku].priceFen <= budget)).map((fit) => fit.sku));
   const candidateSkus = Array.isArray(raw.candidateSkus) ? raw.candidateSkus.filter((sku): sku is string => typeof sku === "string" && allowed.has(sku)) : [];
   const validQuestionFields = new Set<StateField>(["budget", "skinType", "sensitiveTendency", "currentDiscomfort", "fragrancePreference", "acidExperience", "coreConcern"]);
   const questionFields = Array.isArray(raw.questionFields) ? raw.questionFields.filter((field): field is StateField => typeof field === "string" && validQuestionFields.has(field as StateField)).slice(0, 2) : [];
