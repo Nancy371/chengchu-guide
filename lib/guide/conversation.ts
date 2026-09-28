@@ -224,7 +224,7 @@ export function planConversation(input: {
   updatedFields: StateField[];
   questionAttempt?: number;
 }): ConversationPlan {
-  const { draft, state, signals, lifestyle, memories, previousResult, updatedFields, questionAttempt } = input;
+  const { draft, state, signals, lifestyle, memories, previousResult, questionAttempt } = input;
   const memory = relevantMemory(state, memories, draft);
   const rejected = hasSignal(signals, "reject");
   const effectiveDraft: DecisionDraft = rejected && draft.action !== "safety" ? { ...draft, action: "close", recommendations: [], candidateSkus: [], totalFen: undefined, budgetGapFen: undefined, routeReason: "用户明确表示停止推荐或暂不购买" } : draft;

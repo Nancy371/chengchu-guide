@@ -164,9 +164,9 @@ export class ConversationRuntime {
         }
         if (!proposal) proposal = { kind: "direct", source: "fallback", reason: fallbackReason ?? "MODEL_UNAVAILABLE" };
       }
-      let latest = await this.repository.getSession(sessionId, userId);
+      const latest = await this.repository.getSession(sessionId, userId);
       if (!latest) throw new Error("session_not_found");
-      let liveMemory = userId ? await this.repository.getMemoryProfile(userId) : memoryProfile;
+      const liveMemory = userId ? await this.repository.getMemoryProfile(userId) : memoryProfile;
       let authorization = authorizeFinalDecision({ proposal, context: agentContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: liveMemory.version }, signals: understanding.signals });
       if (authorization.status === "STALE" && latest.appliedInputVersion === begin.inputVersion && liveMemory.version !== agentContext.habits.version) {
         agentContext = buildAgentContext({ session: latest, memories: liveMemory.memories, memoryVersion: liveMemory.version, previousResult });
