@@ -17,6 +17,9 @@ export function parseFinalProposal(raw: unknown): FinalDecisionProposal | null {
   if (value.kind === "comparison_only" && Array.isArray(value.skus) && value.skus.length === 2 && value.skus.every((sku) => typeof sku === "string") && new Set(value.skus).size === 2 && Array.isArray(value.evidenceIds) && value.evidenceIds.every((id) => typeof id === "string") && typeof value.field === "string") {
     return { kind: "comparison_only", skus: value.skus, evidenceIds: value.evidenceIds as string[], field: value.field as StateField };
   }
+  if (value.kind === "price_list" && Array.isArray(value.skus) && value.skus.length >= 1 && value.skus.length <= 6 && value.skus.every((sku) => typeof sku === "string") && new Set(value.skus).size === value.skus.length && Array.isArray(value.evidenceIds) && value.evidenceIds.every((id) => typeof id === "string")) {
+    return { kind: "price_list", skus: value.skus, evidenceIds: value.evidenceIds as string[] };
+  }
   if (value.kind === "direct" && (value.source === "rule" || value.source === "fallback") && typeof value.reason === "string" && (value.action === undefined || value.action === "close" || value.action === "unavailable")) return { kind: "direct", source: value.source, reason: value.reason, ...(value.action ? { action: value.action } : {}) };
   return null;
 }
@@ -45,12 +48,18 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
     }
     if (proposal.action === "unavailable") {
       const declined = input.signals?.some((signal) => signal.value === "decline_answer" && signal.subject === "self" && signal.temporal !== "historical");
-      if (!exhaustedLowRiskQuestion(context) && !(declined && context.requiredMissingFields.length)) return { status: "REJECTED", reason: "UNAVAILABLE_NOT_JUSTIFIED" };
-      return { status: "APPROVED", reason: declined ? "DECLINED_REQUIRED_INFO" : "LOW_RISK_UNRESOLVED", decision: { action: "unavailable", route: "degraded", routeReason: declined ? "用户暂不愿回答必要信息" : "必要偏好仍不明确，无法确定当前组合", questionFields: [], candidateSkus: [], recommendations: [], productFits: [...context.productFits], evidence: [], limitations: [declined && safety.status === "unclear" ? "当前不适还没核实，暂时不能安全推荐；以后想继续选购时仍需要先确认" : "这点偏好仍不明确，暂时不能替你选定组合"] } };
+      const unsupportedGift = context.purchaseTask.goal.kind === "unsupported_skincare_gift_box";
+      const noAlternative = context.purchaseTask.turnAction.kind === "request_alternative" && context.productFits.every((fit) => fit.status !== "eligible");
+      if (!exhaustedLowRiskQuestion(context) && !(declined && context.requiredMissingFields.length) && !unsupportedGift && !noAlternative) return { status: "REJECTED", reason: "UNAVAILABLE_NOT_JUSTIFIED" };
+      const reason = unsupportedGift ? "目录暂未提供护肤品礼盒" : noAlternative ? "当前条件下没有尚未展示的合格候选" : declined ? "用户暂不愿回答必要信息" : "必要偏好仍不明确，无法确定当前组合";
+      const limitation = unsupportedGift ? "当前目录只有 P301 旅行分装瓶礼盒，不是护肤品套装" : noAlternative ? "符合当前目标和约束的商品已经展示完了" : declined && safety.status === "unclear" ? "当前不适还没核实，暂时不能安全推荐；以后想继续选购时仍需要先确认" : "这点偏好仍不明确，暂时不能替你选定组合";
+      return { status: "APPROVED", reason: unsupportedGift ? "UNSUPPORTED_GIFT_BOX" : noAlternative ? "NO_NEW_ALTERNATIVE" : declined ? "DECLINED_REQUIRED_INFO" : "LOW_RISK_UNRESOLVED", decision: { action: "unavailable", route: "degraded", routeReason: reason, questionFields: [], candidateSkus: [], recommendations: [], productFits: [...context.productFits], evidence: [], limitations: [limitation] } };
     }
     const draft = decide(state, [...context.habits.relevant]);
+    if (draft.action === "recommend" && context.purchaseTask.budget.status !== "limited" && context.purchaseTask.budget.status !== "unlimited") return { status: "REJECTED", reason: "BUDGET_REQUIRED" };
     if (draft.action === "recommend" && context.requiredMissingFields.length) return { status: "REJECTED", reason: "REQUIRED_FIELD_MISSING" };
     if (draft.action === "recommend") {
+      if (context.purchaseTask.turnAction.kind === "request_alternative" && draft.candidateSkus.some((sku) => context.purchaseTask.displayedSkus.includes(sku))) return { status: "REJECTED", reason: "ALREADY_DISPLAYED" };
       const eligibility = checkEligibility({ skus: draft.candidateSkus, userState: state, memories: context.habits.relevant });
       if (eligibility.unknownSkus.length || eligibility.fits.some((fit) => fit.status !== "eligible")) return { status: "REJECTED", reason: "ELIGIBILITY_FAILED" };
       const quote = checkBudget({ skus: draft.candidateSkus, budgetFen: fact<number>(state, "budget"), mode: draft.pricingMode ?? "single" });
@@ -62,7 +71,7 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
   if (proposal.kind === "comparison_only") {
     const declined = input.signals?.some((signal) => signal.value === "decline_answer" && signal.subject === "self" && signal.temporal !== "historical");
     const peers = comparableFits(context);
-    if (safety.status === "unclear" || !LOW_RISK_FIELDS.has(proposal.field) || context.requiredMissingFields.length !== 1 || context.requiredMissingFields[0] !== proposal.field || (matchingProgress(context, proposal.field)?.askedCount !== MAX_LOW_RISK_QUESTIONS && !declined) || peers.length !== 2 || proposal.skus.some((sku) => !peers.some((fit) => fit.sku === sku))) return { status: "REJECTED", reason: "COMPARISON_NOT_READY" };
+    if (safety.status === "unclear" || context.purchaseTask.budget.status !== "limited" && context.purchaseTask.budget.status !== "unlimited" || !LOW_RISK_FIELDS.has(proposal.field) || context.requiredMissingFields.length !== 1 || context.requiredMissingFields[0] !== proposal.field || ((matchingProgress(context, proposal.field)?.askedCount ?? 0) < MAX_LOW_RISK_QUESTIONS && !declined) || peers.length !== 2 || proposal.skus.some((sku) => !peers.some((fit) => fit.sku === sku))) return { status: "REJECTED", reason: "COMPARISON_NOT_READY" };
     const fits = proposal.skus.map((sku) => context.productFits.find((fit) => fit.sku === sku));
     if (fits.some((fit) => !fit || fit.status !== "eligible" || fit.hardConstraintMatch !== true || fit.budgetStatus === "over" || !context.rawCandidateSkus.includes(fit.sku))) return { status: "REJECTED", reason: "SKU_NOT_AUTHORIZED" };
     const selected = fits as ProductFit[];
@@ -78,12 +87,22 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
     const draft: DecisionDraft = { action: "clarify", route: "reasoning", routeReason: "最终裁决选择先补充必要信息", questionFields: [proposal.field], candidateSkus: [], recommendations: [], productFits: [...context.productFits], evidence: [], limitations: safety.status === "unclear" ? ["安全信息未明确前不推荐商品"] : [] };
     return { status: "APPROVED", reason: "REQUIRED_FIELD", decision: draft };
   }
-  if (proposal.kind === "price_list") return { status: "FALLBACK_REQUIRED", reason: "PRICE_LIST_NOT_READY" };
+  if (proposal.kind === "price_list") {
+    if (safety.status === "unclear" || context.purchaseTask.budget.status !== "declined") return { status: "REJECTED", reason: "PRICE_LIST_NOT_ALLOWED" };
+    const goalCategories = new Set(context.purchaseTask.goal.categories);
+    const selected = proposal.skus.map((sku) => PRODUCTS_BY_SKU[sku]).filter(Boolean);
+    if (selected.length !== proposal.skus.length || selected.some((product) => !goalCategories.has(product.category))) return { status: "REJECTED", reason: "SKU_NOT_AUTHORIZED" };
+    const allowedIds = new Set(selected.map((product) => `catalog:${product.sku}`));
+    if (!proposal.evidenceIds.length || proposal.evidenceIds.some((id) => !allowedIds.has(id))) return { status: "REJECTED", reason: "EVIDENCE_NOT_AUTHORIZED" };
+    return { status: "APPROVED", reason: "BUDGET_DECLINED_PRICE_LIST", decision: { action: "price_list", route: "direct", routeReason: "用户不提供预算，仅列出当前品类的已核实标价", questionFields: [], candidateSkus: [...proposal.skus], recommendations: [], productFits: [...context.candidateProducts], evidence: selected.map((product) => ({ id: `catalog:${product.sku}`, label: `${product.sku} 商品事实`, detail: `${product.name} · ¥${product.priceFen / 100}`, source: product.source, status: "supported" as const })), limitations: ["未指定主推商品"], pricingMode: proposal.skus.length === 1 ? "single" : "alternatives" } };
+  }
   if (safety.status === "unclear") return { status: "FALLBACK_REQUIRED", reason: "SAFETY_UNCLEAR" };
+  if (context.purchaseTask.budget.status !== "limited" && context.purchaseTask.budget.status !== "unlimited") return { status: "FALLBACK_REQUIRED", reason: "BUDGET_REQUIRED" };
   if (context.requiredMissingFields.length) return { status: "FALLBACK_REQUIRED", reason: "REQUIRED_FIELD_MISSING" };
   const fits = proposal.skus.map((sku) => context.productFits.find((fit) => fit.sku === sku));
   if (fits.some((fit) => !fit || fit.status !== "eligible" || fit.hardConstraintMatch !== true || fit.budgetStatus === "over" || !context.rawCandidateSkus.includes(fit.sku))) return { status: "FALLBACK_REQUIRED", reason: "SKU_NOT_AUTHORIZED" };
   const selected = fits as ProductFit[];
+  if (context.purchaseTask.turnAction.kind === "request_alternative" && proposal.skus.some((sku) => context.purchaseTask.displayedSkus.includes(sku))) return { status: "FALLBACK_REQUIRED", reason: "ALREADY_DISPLAYED" };
   const evidence = selected.flatMap((fit) => fit.evidence);
   const authorizedIds = new Set(evidence.map((item) => item.id));
   if (!proposal.evidenceIds.length || proposal.evidenceIds.some((id) => !authorizedIds.has(id))) return { status: "FALLBACK_REQUIRED", reason: "EVIDENCE_NOT_AUTHORIZED" };

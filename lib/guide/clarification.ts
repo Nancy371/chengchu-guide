@@ -37,6 +37,15 @@ export function requiredInformation(context: AgentContext, baseline: DecisionDra
 }
 
 export function matchingProgress(context: AgentContext, field: StateField): ClarificationProgress | undefined {
+  if (context.purchaseTask.pendingQuestion?.field === field) {
+    return {
+      goalKey: clarificationGoalKey(context.userState as UserState, context.purchaseTask),
+      candidateKey: clarificationCandidateKey(context.productFits),
+      field,
+      askedCount: context.purchaseTask.pendingQuestion.askedCount,
+      reason: context.purchaseTask.pendingQuestion.reason,
+    };
+  }
   const progress = context.clarification;
   if (!progress || progress.field !== field || progress.goalKey !== clarificationGoalKey(context.userState as UserState, context.purchaseTask)) return undefined;
   if (progress.candidateKey && context.rawCandidateSkus.length && progress.candidateKey !== clarificationCandidateKey(context.productFits)) return undefined;
@@ -45,7 +54,7 @@ export function matchingProgress(context: AgentContext, field: StateField): Clar
 
 export function exhaustedLowRiskQuestion(context: AgentContext): StateField | undefined {
   const field = context.requiredMissingFields[0];
-  return field && LOW_RISK_FIELDS.has(field) && matchingProgress(context, field)?.askedCount === MAX_LOW_RISK_QUESTIONS
+  return field && LOW_RISK_FIELDS.has(field) && (matchingProgress(context, field)?.askedCount ?? 0) >= MAX_LOW_RISK_QUESTIONS
     ? field : undefined;
 }
 

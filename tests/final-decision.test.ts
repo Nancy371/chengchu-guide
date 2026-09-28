@@ -34,11 +34,11 @@ test("final reasoner may recommend only eligible, evidenced, budgeted candidates
 
 test("question field must be a current required gap", async () => {
   const context = await searched("想买洗面奶");
-  assert.equal(context.requiredMissingFields.includes("skinType"), true);
-  const ask = authorizeFinalDecision({ context, current: current(context), proposal: { kind: "ask", field: "skinType", questionGoal: "区分滋润和清爽", evidenceGap: "肤质未提供" } });
+  assert.equal(context.requiredMissingFields.includes("budget"), true);
+  const ask = authorizeFinalDecision({ context, current: current(context), proposal: { kind: "ask", field: "budget", questionGoal: "确认本次预算", evidenceGap: "预算未提供" } });
   assert.equal(ask.status, "APPROVED");
-  assert.equal(ask.decision?.questionFields[0], "skinType");
-  assert.equal(authorizeFinalDecision({ context, current: current(context), proposal: { kind: "ask", field: "budget", questionGoal: "预算", evidenceGap: "预算" } }).status, "FALLBACK_REQUIRED");
+  assert.equal(ask.decision?.questionFields[0], "budget");
+  assert.equal(authorizeFinalDecision({ context, current: current(context), proposal: { kind: "ask", field: "skinType", questionGoal: "肤质", evidenceGap: "肤质" } }).status, "FALLBACK_REQUIRED");
 });
 
 test("safety, budget and version changes cannot be overridden", async () => {
@@ -53,7 +53,7 @@ test("safety, budget and version changes cannot be overridden", async () => {
 });
 
 test("comparison-only requires four sourced questions, two eligible peers and authorized facts", async () => {
-  const context = await searched("想买洗面奶");
+  const context = await searched("预算200，想买洗面奶");
   const proposal = { kind: "comparison_only", skus: ["P101", "P102"], evidenceIds: ["catalog:P101", "catalog:P102"], field: "skinType" };
   assert.equal(authorizeFinalDecision({ context, current: current(context), proposal }).status, "REJECTED");
   const ready = { ...context, clarification: { goalKey: clarificationGoalKey(context.userState as UserState), candidateKey: "P101+P102", field: "skinType" as const, askedCount: 4, reason: "肤质会影响选择" } };

@@ -74,15 +74,15 @@ test("planner exception is recorded and does not escape the loop", async () => {
 });
 
 test("planner asks one required field and cannot finalize before it is known", async () => {
-  const choices = [action("search_products", { category: "cleanser" }), action("finalize", {}), action("ask_user", { field: "skinType" })];
+  const choices = [action("search_products", { category: "cleanser" }), action("finalize", {}), action("ask_user", { field: "budget" })];
   const result = await runPlannerLoop(context("想买洗面奶"), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
   assert.equal(result.trace[1]?.reason, "REQUIRED_FIELD_MISSING");
-  assert.equal(result.questionField, "skinType");
-  assert.deepEqual(result.context.requiredMissingFields, ["skinType"]);
+  assert.equal(result.questionField, "budget");
+  assert.deepEqual(result.context.requiredMissingFields, ["budget"]);
 });
 
 test("one qualified item or explicit delegated choice does not require a ranking preference", async () => {
-  for (const message of ["预算150，想买洗面奶", "想买洗面奶，你帮我定一款"]) {
+  for (const message of ["预算150，想买洗面奶", "预算500，想买洗面奶，你帮我定一款"]) {
     const choices = [action("search_products", { category: "cleanser" }), action("finalize", {})];
     const result = await runPlannerLoop(context(message), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
     assert.equal(result.fallbackReason, undefined, message);
@@ -91,10 +91,19 @@ test("one qualified item or explicit delegated choice does not require a ranking
 });
 
 test("four unresolved low-risk questions end in a factual comparison without finalize", async () => {
-  const initial = context("想买洗面奶");
+  const initial = context("预算200，想买洗面奶");
   const prior = { ...initial, clarification: { goalKey: clarificationGoalKey(initial.userState as UserState), candidateKey: "P101+P102", field: "skinType" as const, askedCount: 4, reason: "肤质会改变排序" } };
   const result = await runPlannerLoop(prior, { async plan() { return { proposal: action("search_products", { category: "cleanser" }), audit }; } }, Date.now() + 40_000);
   assert.equal(result.comparisonField, "skinType");
   assert.equal(result.questionField, undefined);
   assert.deepEqual(result.context.requiredMissingFields, ["skinType"]);
+});
+
+test("every search rebuilds all six catalog outcomes before selecting goal candidates", async () => {
+  const choices = [action("search_products", { category: "cleanser" }), action("ask_user", { field: "skinType" })];
+  const result = await runPlannerLoop(context("预算200，想买洗面奶"), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
+  assert.equal(result.context.rawCandidateSkus.length, 6);
+  assert.equal(result.context.candidateProducts.length, 6);
+  assert.deepEqual(result.context.productFits.map((fit) => fit.sku).sort(), ["P101", "P102"]);
+  assert.equal(result.context.rejectedProducts.some((item) => item.sku === "P201" && item.stage === "eligibility" || item.stage === "hard_constraint"), true);
 });

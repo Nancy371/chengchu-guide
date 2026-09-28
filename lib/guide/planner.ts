@@ -1,4 +1,4 @@
-import { PRODUCTS_BY_SKU } from "./catalog";
+import { PRODUCTS, PRODUCTS_BY_SKU } from "./catalog";
 import { decide } from "./decision";
 import { checkBudget, checkEligibility, checkSafety, compareProducts, searchProducts } from "./tools";
 import { comparableFits, exhaustedLowRiskQuestion, requiredInformation } from "./clarification";
@@ -17,6 +17,13 @@ const progressByAction: Record<PlannerAction["action"], { evidenceNeeded: string
 export function compilePlannerContext(context: AgentContext) {
   return {
     goal: context.goal,
+    purchaseTask: {
+      goalVersion: context.purchaseTask.goal.version,
+      turnAction: context.purchaseTask.turnAction.kind,
+      budgetStatus: context.purchaseTask.budget.status,
+      displayedSkus: context.purchaseTask.displayedSkus,
+      pendingQuestion: context.purchaseTask.pendingQuestion ?? null,
+    },
     userState: { facts: Object.fromEntries(Object.entries(context.userState.facts).map(([field, value]) => [field, value?.value])) },
     hardConstraints: context.hardConstraints,
     softPreferences: context.softPreferences,
@@ -73,28 +80,43 @@ export function authorizePlannerAction(raw: unknown, context: AgentContext, comp
   return { action: null, reason: "INVALID_ACTION" };
 }
 
-function executeProductSearch(current: AgentContext, category: "cleanser" | "serum" | "moisturizer" | "travel", completed: ReadonlySet<string>) {
-  const found = searchProducts({ category });
+export function executeProductSearch(current: AgentContext, category: "cleanser" | "serum" | "moisturizer" | "travel", completed: ReadonlySet<string>) {
+  const found = searchProducts({});
   const safety = checkSafety({ userState: current.userState });
   if (safety.status === "active_risk") return { context: { ...current, productFits: [], candidateProducts: [] }, moreSearches: false, eligibleCount: 0, safetyStop: true };
   const eligibility = checkEligibility({ skus: found.products.map((product) => product.sku), userState: current.userState, memories: current.habits.relevant });
-  const rejectedProducts = [...current.rejectedProducts];
+  const rejectedProducts: AgentContext["rejectedProducts"][number][] = [];
   const accepted: ProductFit[] = [];
   const observations: ToolObservation[] = [...current.observations];
   const observe = (tool: ToolObservation["tool"], outcome: string, data?: unknown) => observations.push({ order: observations.length + 1, tool, outcome, data });
-  observe("search_products", `${category}: ${found.products.map((product) => product.sku).join("、")}`, { skus: found.products.map((product) => product.sku) });
+  observe("search_products", `重算完整目录；本步目标品类 ${category}`, { skus: found.products.map((product) => product.sku), requestedCategory: category });
   observe("check_safety", safety.status);
   observe("check_eligibility", `已检查 ${eligibility.fits.length} 个候选`);
+  const requestedCategories = new Set(current.goal.categories);
+  const targetSku = current.goal.targetSku;
+  const isAlternative = current.purchaseTask.turnAction.kind === "request_alternative";
+  const candidateProducts: ProductFit[] = [];
   for (const fit of eligibility.fits) {
-    if (fit.status === "excluded") { rejectedProducts.push({ sku: fit.sku, reason: fit.blockers.join("；"), stage: "eligibility" }); continue; }
+    const product = PRODUCTS_BY_SKU[fit.sku];
+    const belongsToGoal = Boolean(product) && requestedCategories.has(product.category) && (!targetSku || targetSku === fit.sku);
     const quote = checkBudget({ skus: [fit.sku], budgetFen: current.hardConstraints.budgetFen, mode: "single" });
     observe("check_budget", `${fit.sku}: ${quote.totalFen ?? "未知"} 分`);
-    if (quote.withinBudget === false) { rejectedProducts.push({ sku: fit.sku, reason: "超过当前预算", stage: "budget" }); continue; }
-    accepted.push({ ...fit, safetyStatus: safety.status, hardConstraintMatch: true, budgetStatus: quote.withinBudget === null ? "unknown" : "within", fitEvidenceIds: fit.evidence.map((item) => item.id), productFactIds: fit.evidence.filter((item) => item.id.startsWith("catalog:")).map((item) => item.id) });
+    const budgetStatus: ProductFit["budgetStatus"] = current.hardConstraints.budgetStatus === "unlimited" ? "within" : quote.withinBudget === false ? "over" : quote.withinBudget === true ? "within" : "unknown";
+    const alreadyDisplayed = isAlternative && current.purchaseTask.displayedSkus.includes(fit.sku);
+    const blockers = [...fit.blockers, ...(budgetStatus === "over" && belongsToGoal ? ["超过当前预算"] : []), ...(alreadyDisplayed && belongsToGoal ? ["当前购买目标下已展示过"] : [])];
+    const status: ProductFit["status"] = !belongsToGoal || fit.status === "excluded" || budgetStatus === "over" || alreadyDisplayed ? "excluded" : fit.status;
+    const compiled: ProductFit = { ...fit, status, blockers, safetyStatus: safety.status, hardConstraintMatch: fit.status !== "excluded", budgetStatus, fitEvidenceIds: fit.evidence.map((item) => item.id), productFactIds: fit.evidence.filter((item) => item.id.startsWith("catalog:")).map((item) => item.id) };
+    candidateProducts.push(compiled);
+    if (!belongsToGoal || status === "excluded") {
+      const stage = alreadyDisplayed && belongsToGoal ? "already_displayed" : budgetStatus === "over" && belongsToGoal ? "budget" : fit.status === "excluded" ? "eligibility" : "hard_constraint";
+      rejectedProducts.push({ sku: fit.sku, reason: blockers.join("；") || "不属于当前购买目标", stage });
+      continue;
+    }
+    accepted.push(compiled);
   }
-  const rawCandidateSkus = [...new Set([...current.rawCandidateSkus, ...found.products.map((product) => product.sku)])];
-  const productFits = [...current.productFits.filter((fit) => !found.products.some((product) => product.sku === fit.sku)), ...accepted];
-  const provisional = { ...current, rawCandidateSkus, productFits, candidateProducts: productFits, rejectedProducts, observations, completedActions: observations.map((item) => item.tool) };
+  const rawCandidateSkus = PRODUCTS.map((product) => product.sku);
+  const productFits = accepted;
+  const provisional: AgentContext = { ...current, rawCandidateSkus, productFits, candidateProducts, rejectedProducts, observations, completedActions: observations.map((item) => item.tool) };
   const requiredMissingFields = requiredInformation(provisional, decide(current.userState as UserState, [...current.habits.relevant]));
   const searched = new Set([...completed, `search:${category}`]);
   const moreSearches = current.goal.categories.some((item) => !searched.has(`search:${item}`));
