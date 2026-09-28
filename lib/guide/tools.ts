@@ -97,7 +97,7 @@ export function compileProductFits(state: UserState, memories: HabitMemory[] = [
     if (product.sku === "P102") {
       if (skin === "oily") { matches.push("偏油且偏好清爽时可考虑"); score += 30; }
       if (fact<string>(state, "coreConcern") === "fresh_texture") { matches.push("清洁感较强，符合清爽诉求"); score += 12; }
-      if (fragrance === "accepts_fragrance") score += 10;
+      // Accepting a scent does not establish a match to an unspecified scent note.
       if (fragrance === "fragrance_sensitive") { tradeoffs.push("带香味，手册提示对香味敏感者不优先"); score -= 25; }
       if (fragrance === "must_be_fragrance_free") blockers.push("用户明确要求无香，而本品带香味");
     }
@@ -121,7 +121,7 @@ export function compileProductFits(state: UserState, memories: HabitMemory[] = [
     if (product.sku === "P203") {
       if (skin === "oily") { matches.push("偏油且喜欢轻薄肤感时可考虑"); score += 28; }
       if (fact<string>(state, "coreConcern") === "fresh_texture") { matches.push("清爽质地符合轻薄诉求"); score += 15; }
-      if (fragrance === "accepts_fragrance") score += 8;
+      // The catalog does not identify the scent, so preference adds no match score.
       if (fragrance === "fragrance_sensitive") { tradeoffs.push("带淡香，手册提示对香味敏感者不优先"); score -= 25; }
       if (fragrance === "must_be_fragrance_free") blockers.push("用户明确要求无香，而本品带淡香");
     }

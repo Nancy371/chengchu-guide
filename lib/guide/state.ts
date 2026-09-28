@@ -5,9 +5,9 @@ export const EMPTY_STATE: UserState = { facts: {}, history: [], turn: 0 };
 
 const fields = new Set<StateField>([
   "intent", "targetSku", "categories", "budget", "budgetScope", "skinType",
-  "sensitiveTendency", "currentDiscomfort", "fragrancePreference", "acidExperience",
+  "sensitiveTendency", "currentDiscomfort", "fragrancePreference", "fragranceNote", "acidExperience",
   "stinging", "pain", "skinDamage", "otherDiscomfort",
-  "existingProducts", "travelNeed", "useOccasions", "texturePreference", "coreConcern", "channelPreference",
+  "existingProducts", "travelNeed", "useOccasions", "texturePreference", "delegateChoice", "coreConcern", "channelPreference",
   "claimedOnlinePrice", "policyTopics",
 ]);
 
@@ -99,7 +99,14 @@ export function deterministicExtract(text: string): StateDelta {
 
   if (/必须.*无香|一点香味都没有|不要香味|只要无香|只喜欢无香/.test(compact)) updates.push(update("fragrancePreference", "must_be_fragrance_free", raw));
   else if (/对香味敏感|闻不了香|香味敏感/.test(compact)) updates.push(update("fragrancePreference", "fragrance_sensitive", raw));
+  else if (/(?:香味|香气|味道).{0,3}(?:都可以|无所谓|随便)/.test(compact)) updates.push(update("fragrancePreference", "no_preference", raw));
   else if (/可以接受香味|能接受香味|喜欢香味|带香.*可以|(?:喜欢|偏爱)[^，。]{0,8}(?:香|香味)/.test(compact) && !/不喜欢|无香|不接受|讨厌|受不了/.test(compact)) updates.push(update("fragrancePreference", "accepts_fragrance", raw));
+
+  if (subjectFor(compact) === "self" && !/(?:以前|曾经|过去|之前|去年|上次|不喜欢|讨厌|受不了)/.test(compact)) {
+    const note = compact.match(/(?:喜欢|偏爱|偏好)([^，。；;！？!?]{1,10}香)/)?.[1];
+    if (note && !/^(?:香|味|带香)/.test(note)) updates.push(update("fragranceNote", note, raw));
+  }
+  if (/你帮我(?:定|选|挑)(?:一款|一个|吧)?|你来帮我选|直接帮我选/.test(compact)) updates.push(update("delegateChoice", true, raw));
 
   if (/没用过果酸|第一次用果酸|没有.*果酸.*经验/.test(compact)) updates.push(update("acidExperience", false, raw));
   else if (/用过果酸|果酸.*很多年|有.*焕肤.*经验|有.*果酸.*经验/.test(compact)) updates.push(update("acidExperience", true, raw));
@@ -113,6 +120,7 @@ export function deterministicExtract(text: string): StateDelta {
   if (occasions.length) updates.push(update("useOccasions", occasions, raw));
   if (/不喜欢黏|讨厌黏|不要黏|喜欢轻薄|喜欢清爽/.test(compact)) updates.push(update("texturePreference", "lightweight", raw));
   if (/洗后紧绷|洗完.*紧绷|洗完.*拔干/.test(compact)) updates.push(update("texturePreference", "avoid_tightness", raw));
+  if (/(?:质地|肤感).{0,3}(?:都可以|无所谓|随便)/.test(compact)) updates.push(update("texturePreference", "no_preference", raw));
   if (/粗糙/.test(compact)) updates.push(update("coreConcern", "roughness", raw));
   if (/清爽|轻薄/.test(compact)) updates.push(update("coreConcern", "fresh_texture", raw));
   if (/简单护理|精简护理/.test(compact)) updates.push(update("coreConcern", "simple_routine", raw));
@@ -163,7 +171,7 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if (/(?:经常|常常|总是|每个月|每周).*(?:出差|旅行)|(?:出差|旅行).*(?:经常|常常|总是)/.test(compact)) lifestyle.push({ kind: "frequent_travel", value: true, quote: raw, scope: "durable", explicit: true, subject });
   if (/必须.*无香|不要香味|只要无香|只喜欢无香|不喜欢香味/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "must_be_fragrance_free", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   else if (/对香味敏感|闻不了香|香味敏感/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "fragrance_sensitive", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
-  else if (/喜欢香味|可以接受香味|能接受香味|(?:喜欢|偏爱)[^，。]{0,8}香/.test(compact) && !/不喜欢|无香|不接受|讨厌|受不了/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "accepts_fragrance", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
+  else if (/喜欢香味|可以接受香味|能接受香味/.test(compact) && !/不喜欢|无香|不接受|讨厌|受不了/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "accepts_fragrance", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   if (/不喜欢黏|讨厌黏|不要黏|喜欢轻薄|喜欢清爽/.test(compact)) lifestyle.push({ kind: "texture_preference", value: "lightweight", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   if (/不想重复买|避免重复买|已有.*不再买|只想买单品|以后.*单品/.test(compact)) lifestyle.push({ kind: "purchase_preference", value: /单品/.test(compact) ? "single_item" : "avoid_duplicate", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
 
@@ -172,6 +180,9 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
     const answer = compact.replace(/[，。！？?!,.]/g, "");
     if (/^(?:我)?(?:是|偏|比较)?干(?:的|皮)?$/.test(answer)) delta.updates.push(update("skinType", "dry", raw));
     else if (/^(?:我)?(?:是|偏|比较)?油(?:的|皮)?$/.test(answer)) delta.updates.push(update("skinType", "oily", raw));
+  }
+  if ((pendingQuestion === "fragrancePreference" || pendingQuestion === "texturePreference") && !delta.updates.some((item) => item.field === pendingQuestion) && /^(?:我)?(?:都可以|无所谓|随便|都行)(?:吧|的)?[。！!，,]*$/.test(compact)) {
+    delta.updates.push(update(pendingQuestion, "no_preference", raw));
   }
   if (pendingQuestion && !delta.updates.some((item) => item.field === pendingQuestion) && /^(?:我)?(?:觉得)?(?:还可以|还行|一般|差不多|说不好|不太确定|看情况)(?:吧|的)?[。！!，,]*$/.test(compact)) {
     signals.push(signal("communication", "answer_ambiguous", raw, subject));
@@ -195,7 +206,14 @@ export function validateDelta(delta: unknown, text: string): StateDelta | null {
       /(?:香|味)/.test(candidate.quote) && /(?:喜欢|偏爱|好闻|能接受|可以接受)/.test(candidate.quote);
     // A low-risk preference may be semantically normalized from literal user
     // words. Safety facts still require the stricter local value agreement.
-    if (!locallySupported && !semanticFragrance) continue;
+    const semanticNote = candidate.field === "fragranceNote" && typeof candidate.value === "string" &&
+      candidate.value.length >= 2 && candidate.value.length <= 12 && candidate.quote.includes(candidate.value) &&
+      subjectFor(candidate.quote) === "self" && !/(?:以前|曾经|过去|之前|去年|上次|不喜欢|无香|不接受|讨厌|受不了)/.test(candidate.quote) &&
+      /(?:喜欢|偏爱|偏好)/.test(candidate.quote);
+    const semanticTexture = candidate.field === "texturePreference" && candidate.value === "lightweight" &&
+      subjectFor(candidate.quote) === "self" && !/(?:以前|曾经|过去|之前|去年|上次|不喜欢轻薄|不喜欢清爽)/.test(candidate.quote) &&
+      /(?:喜欢|偏爱|偏好)(?:清爽|轻薄|不黏)|(?:讨厌|不喜欢)(?:黏|厚重)/.test(candidate.quote);
+    if (!locallySupported && !semanticFragrance && !semanticNote && !semanticTexture) continue;
     valid.push({ ...candidate, extractedBy: "model", status: candidate.status === "unclear" ? "unclear" : "confirmed" });
   }
   return { updates: valid, extraction: "model", warnings: [] };
@@ -206,13 +224,14 @@ function validFieldValue(field: StateField, value: unknown): value is FactValue 
     intent: ["recommend", "price", "policy", "clarify"],
     budgetScope: ["total", "current_item"],
     skinType: ["dry", "oily"],
-    fragrancePreference: ["must_be_fragrance_free", "fragrance_sensitive", "accepts_fragrance"],
+    fragrancePreference: ["must_be_fragrance_free", "fragrance_sensitive", "accepts_fragrance", "no_preference"],
     coreConcern: ["roughness", "fresh_texture", "simple_routine"],
-    texturePreference: ["lightweight", "avoid_tightness"],
+    texturePreference: ["lightweight", "avoid_tightness", "no_preference"],
     channelPreference: ["online", "offline"],
   };
   if (field === "budget" || field === "claimedOnlinePrice") return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-  if (["sensitiveTendency", "acidExperience", "travelNeed"].includes(field)) return typeof value === "boolean";
+  if (["sensitiveTendency", "acidExperience", "travelNeed", "delegateChoice"].includes(field)) return typeof value === "boolean";
+  if (field === "fragranceNote") return typeof value === "string" && value.length >= 2 && value.length <= 12;
   if (field === "currentDiscomfort" || symptomFields.includes(field as SymptomField)) return value === true || value === false || value === "unclear";
   if (field === "targetSku") return typeof value === "string" && Object.hasOwn(PRODUCTS_BY_SKU, value);
   if (["categories", "existingProducts", "useOccasions", "policyTopics"].includes(field)) {
@@ -249,6 +268,8 @@ export function validateUnderstanding(value: unknown, text: string, pendingQuest
     if (!item || typeof item !== "object") return [];
     const candidate = item as Partial<LifestyleObservation>;
     if (!candidate.kind || !habitKinds.has(candidate.kind) || typeof candidate.quote !== "string" || !candidate.quote || !text.includes(candidate.quote) || !["string", "boolean"].includes(typeof candidate.value)) return [];
+    if (candidate.value === "no_preference") return [];
+    if (candidate.kind === "fragrance_preference" && candidate.value === "accepts_fragrance" && !/(?:喜欢香味|可以接受香味|能接受香味)/.test(candidate.quote)) return [];
     return [{ kind: candidate.kind, value: candidate.value as string | boolean, quote: candidate.quote, scope: candidate.scope === "durable" ? "durable" : candidate.scope === "session" ? "session" : "turn", explicit: candidate.explicit !== false, subject: candidate.subject === "other" ? "other" : candidate.subject === "unknown" ? "unknown" : "self" }];
   }) : [];
   return { delta, signals, lifestyle };
@@ -282,6 +303,10 @@ export function applyDelta(state: UserState, delta: StateDelta): UserState {
   if (Array.isArray(nextCategories) && facts.targetSku && !nextCategories.includes(PRODUCTS_BY_SKU[String(facts.targetSku.value)]?.category)) {
     history.push(facts.targetSku);
     delete facts.targetSku;
+  }
+  if (Array.isArray(nextCategories) && JSON.stringify(nextCategories) !== JSON.stringify(facts.categories?.value)) {
+    if (facts.delegateChoice) history.push(facts.delegateChoice);
+    delete facts.delegateChoice;
   }
   if (!delta.updates.some((item) => item.field === "policyTopics")) delete facts.policyTopics;
   if (!delta.updates.some((item) => item.field === "claimedOnlinePrice")) delete facts.claimedOnlinePrice;

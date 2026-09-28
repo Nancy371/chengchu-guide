@@ -115,9 +115,22 @@ test("a vague answer to the pending sensitivity question remains unconfirmed", a
 test("explicit scent liking can be normalized without inventing a product scent", async () => {
   const local = await verifiedState.update({ currentState: empty(), userMessage: "我喜欢桂花香" });
   assert.equal(fact(local.state, "fragrancePreference"), "accepts_fragrance");
+  assert.equal(fact(local.state, "fragranceNote"), "桂花香");
   const semantic = await verifiedState.update({ currentState: empty(), userMessage: "桂花味挺好闻", extract: async () => ({ audit, proposal: { updates: [{ field: "fragrancePreference", value: "accepts_fragrance", quote: "桂花味挺好闻", status: "confirmed" }], signals: [], lifestyle: [] } }) });
   assert.equal(fact(semantic.state, "fragrancePreference"), "accepts_fragrance");
   assert.equal(semantic.state.facts.fragrancePreference?.quote, "桂花味挺好闻");
   const negated = await verifiedState.update({ currentState: empty(), userMessage: "我不喜欢桂花香", extract: async () => ({ audit, proposal: { updates: [{ field: "fragrancePreference", value: "accepts_fragrance", quote: "我不喜欢桂花香", status: "confirmed" }], signals: [], lifestyle: [] } }) });
   assert.equal(fact(negated.state, "fragrancePreference"), undefined);
+  assert.equal(fact(negated.state, "fragranceNote"), undefined);
+});
+
+test("neutral answers and delegated choice stay grounded in the current purchase", async () => {
+  const initial = (await verifiedState.update({ currentState: empty(), userMessage: "想买洁面" })).state;
+  const neutral = await verifiedState.update({ currentState: initial, userMessage: "都可以", pendingQuestion: "fragrancePreference" });
+  assert.equal(fact(neutral.state, "fragrancePreference"), "no_preference");
+  assert.equal(neutral.understanding.lifestyle.length, 0);
+  const delegate = await verifiedState.update({ currentState: neutral.state, userMessage: "你帮我定一款" });
+  assert.equal(fact(delegate.state, "delegateChoice"), true);
+  const switched = await verifiedState.update({ currentState: delegate.state, userMessage: "现在只看保湿" });
+  assert.equal(fact(switched.state, "delegateChoice"), undefined);
 });
