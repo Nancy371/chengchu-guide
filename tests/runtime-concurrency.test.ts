@@ -58,7 +58,7 @@ class MemoryRepository {
   async getMemoryProfile() { return { enabled: false, version: 0, memories: [] }; }
 }
 
-function runtime(repo: MemoryRepository, options: { renderGate?: ReturnType<typeof deferred>; extractGate?: ReturnType<typeof deferred>; plannerGate?: ReturnType<typeof deferred>; reasonerGate?: ReturnType<typeof deferred>; plannerActions?: unknown[]; reasonerProposal?: unknown; rejectedRender?: boolean; reviewThrows?: boolean } = {}) {
+function runtime(repo: MemoryRepository, options: { renderGate?: ReturnType<typeof deferred>; extractGate?: ReturnType<typeof deferred>; plannerGate?: ReturnType<typeof deferred>; reasonerGate?: ReturnType<typeof deferred>; plannerActions?: unknown[]; reasonerProposal?: unknown; rejectedRender?: boolean; reviewThrows?: boolean; onRender?: () => void } = {}) {
   const model = {
     async extract(text: string) {
       if (options.extractGate && text.includes("P101")) await options.extractGate.promise;
@@ -74,6 +74,7 @@ function runtime(repo: MemoryRepository, options: { renderGate?: ReturnType<type
       return { proposal: options.reasonerProposal ?? null, audit: modelAudit("reason") };
     },
     async render() {
+      options.onRender?.();
       if (options.renderGate) await options.renderGate.promise;
       if (options.rejectedRender || options.reviewThrows) return { copy: { reply: "买就送小样，拆封也能退。", questions: [], factBlockIds: [] }, audit: modelAudit("render") };
       return { copy: null, audit: modelAudit("render") };
@@ -85,6 +86,17 @@ function runtime(repo: MemoryRepository, options: { renderGate?: ReturnType<type
   };
   return new ConversationRuntime(repo as unknown as ConstructorParameters<typeof ConversationRuntime>[0], model as unknown as ConstructorParameters<typeof ConversationRuntime>[1]);
 }
+
+test("single-question clarification uses one grounded sentence without a renderer detour", async () => {
+  const repo = new MemoryRepository();
+  let renderCalls = 0;
+  const result = await runtime(repo, { onRender: () => { renderCalls++; } }).handleTurn("s", "r1", "想买洗面奶");
+  assert.equal(result.result.action, "clarify");
+  assert.equal(result.result.render.source, "template");
+  assert.equal(renderCalls, 0);
+  assert.equal(result.result.questions.length, 1);
+  assert.equal((result.result.reply.match(/[？?]/g) ?? []).length, 1);
+});
 
 async function until(predicate: () => boolean) {
   for (let i = 0; i < 100; i++) {

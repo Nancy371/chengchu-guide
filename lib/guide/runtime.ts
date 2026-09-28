@@ -219,9 +219,9 @@ export class ConversationRuntime {
       });
       let rendered = null;
       let renderFallbackReason: string | undefined;
-      if (plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" || understanding.signals.some((item) => item.value === "answer_ambiguous" && item.subject === "self")) {
+      if (plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" || plan.policy.nextAction === "clarify" || understanding.signals.some((item) => item.value === "answer_ambiguous" && item.subject === "self")) {
         rendered = renderTemplate(plan, understanding.signals);
-        renderFallbackReason = plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" ? "deterministic_safety_or_close" : "contextual_ambiguity_followup";
+        renderFallbackReason = plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" ? "deterministic_safety_or_close" : plan.policy.nextAction === "clarify" ? "single_question_template" : "contextual_ambiguity_followup";
       } else {
         const renderResult = await this.model.render(plan, deadlineAt - Date.now());
         if (renderResult.copy) {
