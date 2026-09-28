@@ -24,7 +24,7 @@ function allowedActions(state: UserState, fits: ReadonlyArray<ProductFit> = []):
 
 export function buildAgentContext(input: { session: SessionRecord; memories?: readonly HabitMemory[]; memoryVersion?: number; remainingTimeBudget?: number; previousResult?: SessionRecord["result"] }): AgentContext {
   const checkpointState = structuredClone(input.session.state);
-  const purchaseTask = structuredClone(input.previousResult?.purchaseTask ?? checkpointState.purchaseTask ?? rebuildPurchaseTask(checkpointState));
+  const purchaseTask = structuredClone(checkpointState.purchaseTask ?? input.previousResult?.purchaseTask ?? rebuildPurchaseTask(checkpointState));
   const state = stateForPurchaseTask(checkpointState, purchaseTask);
   const categories = fact<string[]>(state, "categories") ?? [];
   const storedSku = fact<string>(state, "targetSku");

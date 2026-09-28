@@ -1,6 +1,7 @@
 import { planConversation, renderTemplate } from "./conversation";
 import { buildAgentContext, decisionTrace, withDecision } from "./agent-context";
 import { decide, KNOWLEDGE_VERSION } from "./decision";
+import { PRODUCTS_BY_SKU } from "./catalog";
 import { authorizeFinalDecision, parseFinalProposal, safetyDecision } from "./final-decision";
 import { prepareDeterministicCandidates, runPlannerLoop } from "./planner";
 import { clarificationGoalKey, comparableFits, exhaustedLowRiskQuestion, matchingProgress, nextClarificationProgress } from "./clarification";
@@ -9,6 +10,7 @@ import { D1GuideRepository } from "./repository";
 import { composeResult } from "./response";
 import { deterministicExtract, deterministicUnderstand, fact } from "./state";
 import { verifiedState } from "./verified-state";
+import { askPurchaseQuestion, completePurchaseTask, updatePurchaseTask } from "./purchase-task";
 import type { AgentTrace, DecisionResult, FinalDecisionProposal, ModelAudit, SessionRecord, TurnUnderstanding } from "./types";
 
 const PREDECESSOR_TIMEOUT_MS = 12_000;
@@ -19,6 +21,12 @@ function comparisonProposal(context: ReturnType<typeof buildAgentContext>, field
 }
 
 function deterministicProposal(context: ReturnType<typeof buildAgentContext>, reason: string): FinalDecisionProposal {
+  if (context.purchaseTask.goal.kind === "unsupported_skincare_gift_box") return { kind: "direct", source: "fallback", reason: "UNSUPPORTED_GIFT_BOX", action: "unavailable" };
+  if (context.purchaseTask.budget.status === "declined") {
+    const skus = context.candidateProducts.filter((fit) => context.purchaseTask.goal.categories.includes(PRODUCTS_BY_SKU[fit.sku]?.category)).map((fit) => fit.sku);
+    return skus.length ? { kind: "price_list", skus, evidenceIds: skus.map((sku) => `catalog:${sku}`) } : { kind: "direct", source: "fallback", reason: "NO_RELATED_PRODUCTS", action: "unavailable" };
+  }
+  if (context.purchaseTask.turnAction.kind === "request_alternative" && !context.productFits.some((fit) => fit.status === "eligible")) return { kind: "direct", source: "fallback", reason: "NO_NEW_ALTERNATIVE", action: "unavailable" };
   const unresolved = context.requiredMissingFields[0];
   const exhausted = exhaustedLowRiskQuestion(context);
   if (exhausted && comparableFits(context).length === 2) return comparisonProposal(context, exhausted);
@@ -37,7 +45,7 @@ function staleResult(session: SessionRecord): DecisionResult {
     candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: ["请以最新输入的回复为准"],
   }, session.state, [], { input: session.inputVersion, state: session.stateVersion, knowledge: KNOWLEDGE_VERSION },
   { signals: [], lifestyle: [], updatedFields: [], renderFallbackReason: "stale_input" });
-  return { ...result, reply: "已收到更新的消息，前一条建议先别看；我会按最新信息重新判断。", recommendations: [] };
+  return { ...result, reply: "已收到更新的消息，前一条建议先别看；我会按最新信息重新判断。", recommendations: [], ...(session.result?.purchaseTask ?? session.state.purchaseTask ? { purchaseTask: session.result?.purchaseTask ?? session.state.purchaseTask } : {}) };
 }
 
 export class ConversationRuntime {
@@ -54,8 +62,10 @@ export class ConversationRuntime {
       const pending = await this.repository.getPendingInput(sessionId, current.appliedInputVersion + 1, userId);
       if (!pending) throw new Error("pending_input_missing");
       if (Date.now() >= pending.created_at + PREDECESSOR_TIMEOUT_MS) {
-        const verified = await verifiedState.update({ currentState: current.state, userMessage: pending.text });
-        const recovered = await this.repository.commitState(sessionId, current.appliedInputVersion + 1, current.stateVersion, verified.state);
+        const priorTask = current.result?.purchaseTask ?? current.state.purchaseTask;
+        const verified = await verifiedState.update({ currentState: current.state, userMessage: pending.text, pendingQuestion: priorTask?.pendingQuestion?.field });
+        const purchaseTask = updatePurchaseTask({ previous: priorTask, previousState: current.state, currentState: verified.state, understanding: verified.understanding, userMessage: pending.text });
+        const recovered = await this.repository.commitState(sessionId, current.appliedInputVersion + 1, current.stateVersion, { ...verified.state, purchaseTask });
         if (recovered) await this.repository.failTurn(sessionId, pending.request_id, staleResult(recovered));
         continue;
       }
@@ -72,7 +82,7 @@ export class ConversationRuntime {
     }
 
     const audits: ModelAudit[] = [];
-    let understanding: TurnUnderstanding = deterministicUnderstand(text, begin.previousResult?.clarification?.field ?? begin.previousResult?.questionFields[0]);
+    let understanding: TurnUnderstanding = deterministicUnderstand(text, begin.previousResult?.purchaseTask?.pendingQuestion?.field ?? begin.previousResult?.clarification?.field ?? begin.previousResult?.questionFields[0]);
     let checkpoint: SessionRecord | null = null;
     try {
       const predecessor = await this.awaitPredecessors(sessionId, begin.inputVersion, userId);
@@ -84,15 +94,16 @@ export class ConversationRuntime {
         return { result: stale, duplicate: false, stale: true };
       }
       const startedAt = Date.now();
-      const previousResult = begin.previousResult?.versions.state === predecessor.stateVersion ? begin.previousResult : null;
+      const previousResult = predecessor.result?.versions.state === predecessor.stateVersion ? predecessor.result : begin.previousResult?.versions.state === predecessor.stateVersion ? begin.previousResult : null;
       const nextCategory = deterministicExtract(text).updates.find((item) => item.field === "categories")?.value;
       const categoryChanged = Array.isArray(nextCategory) && JSON.stringify(nextCategory) !== JSON.stringify(predecessor.state.facts.categories?.value);
-      const pendingQuestion = categoryChanged ? undefined : previousResult?.clarification?.field ?? previousResult?.questionFields[0];
+      const pendingQuestion = categoryChanged ? undefined : previousResult?.purchaseTask?.pendingQuestion?.field ?? previousResult?.clarification?.field ?? previousResult?.questionFields[0];
       const verified = await verifiedState.update({ currentState: predecessor.state, userMessage: text, pendingQuestion,
         extract: (message, state, pendingQuestion) => this.model.extract(message, state, pendingQuestion) });
       if (verified.audit.model) audits.push(verified.audit.model);
       understanding = verified.understanding;
-      const state = verified.state;
+      const purchaseTask = updatePurchaseTask({ previous: previousResult?.purchaseTask ?? predecessor.state.purchaseTask, previousState: predecessor.state, currentState: verified.state, understanding, userMessage: text });
+      const state = { ...verified.state, purchaseTask };
       const updatedFields = verified.audit.updatedFields;
 
       checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, predecessor.stateVersion, state);
@@ -109,8 +120,8 @@ export class ConversationRuntime {
         : { enabled: false, version: 0, memories: [] };
       let agentContext = buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version, previousResult });
       const deterministic = agentContext.hardConstraints.safety === "active_risk"
-        ? safetyDecision(checkpoint.state)
-        : decide(checkpoint.state, memoryProfile.memories);
+        ? safetyDecision(agentContext.userState as SessionRecord["state"])
+        : decide(agentContext.userState as SessionRecord["state"], memoryProfile.memories);
       const deadlineAt = startedAt + (["safety", "price_answer", "policy_unknown", "budget_conflict", "unavailable"].includes(deterministic.action) ? 20_000 : 40_000);
       const plannerTrace: AgentTrace["planner"] = [];
       let fallbackReason: string | undefined;
@@ -134,6 +145,11 @@ export class ConversationRuntime {
       } else if (deterministic.action === "safety" || reject || ["price_answer", "policy_unknown", "budget_conflict", "unavailable"].includes(deterministic.action) || agentContext.hardConstraints.safety === "unclear") {
         agentContext = { ...agentContext, observations: [{ order: 1, tool: "check_safety", outcome: agentContext.hardConstraints.safety }], completedActions: ["check_safety"] };
         proposal = { kind: "direct", source: "rule", reason: reject ? "USER_REJECTED" : deterministic.routeReason, ...(reject && deterministic.action !== "safety" ? { action: "close" as const } : {}) };
+      } else if (agentContext.purchaseTask.goal.kind === "unsupported_skincare_gift_box") {
+        proposal = { kind: "direct", source: "rule", reason: "UNSUPPORTED_GIFT_BOX", action: "unavailable" };
+      } else if (agentContext.purchaseTask.budget.status === "declined") {
+        agentContext = prepareDeterministicCandidates(agentContext);
+        proposal = deterministicProposal(agentContext, "BUDGET_DECLINED");
       } else {
         const loop = await runPlannerLoop(agentContext, this.model, deadlineAt);
         agentContext = loop.context;
@@ -209,11 +225,18 @@ export class ConversationRuntime {
       } else {
         const renderResult = await this.model.render(plan, deadlineAt - Date.now());
         if (renderResult.copy) {
-          const review = await this.model.reviewRender(plan, renderResult.copy, deadlineAt - Date.now());
-          audits.push({ ...renderResult.audit, used: review.approved });
-          audits.push(review.audit);
-          rendered = review.approved ? renderResult.copy : null;
-          renderFallbackReason = review.approved ? undefined : review.audit.failureReason ?? "render_review_rejected";
+          try {
+            const review = await this.model.reviewRender(plan, renderResult.copy, deadlineAt - Date.now());
+            audits.push({ ...renderResult.audit, used: review.approved });
+            audits.push(review.audit);
+            rendered = review.approved ? renderResult.copy : null;
+            renderFallbackReason = review.approved ? undefined : review.audit.failureReason ?? "render_review_rejected";
+          } catch {
+            audits.push({ ...renderResult.audit, used: false, businessAccepted: false });
+            audits.push({ stage: "render_review", model: "configured-reviewer", modelInvoked: true, parseSuccess: false, schemaSuccess: false, businessAccepted: false, used: false, latencyMs: 0, failureReason: "render_review_exception" });
+            rendered = null;
+            renderFallbackReason = "render_review_exception";
+          }
         } else {
           audits.push(renderResult.audit);
           renderFallbackReason = renderResult.audit.failureReason ?? "render_unavailable";
@@ -241,7 +264,9 @@ export class ConversationRuntime {
       const clarification = askedField ? nextClarificationProgress(agentContext, askedField, draft.routeReason)
         : ["price_answer", "policy_unknown", "comparison_only"].includes(composed.action) && agentContext.clarification?.goalKey === clarificationGoalKey(checkpoint.state)
           ? agentContext.clarification : undefined;
-      const result = { ...composed, ...(clarification ? { clarification } : {}) };
+      const taskWithQuestion = askedField ? askPurchaseQuestion(agentContext.purchaseTask as typeof purchaseTask, askedField, draft.routeReason) : agentContext.purchaseTask as typeof purchaseTask;
+      const completedTask = completePurchaseTask(taskWithQuestion, composed);
+      const result = { ...composed, ...(clarification ? { clarification } : {}), purchaseTask: completedTask };
       const committed = await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, result);
       if (!committed) {
         const current = await this.repository.getSession(sessionId, userId);
@@ -270,9 +295,11 @@ export class ConversationRuntime {
     } catch (error) {
       const current = await this.repository.getSession(sessionId, userId);
       if (current?.appliedInputVersion === begin.inputVersion - 1) {
-        const verified = await verifiedState.update({ currentState: current.state, userMessage: text, pendingQuestion: begin.previousResult?.questionFields[0] });
+        const priorTask = current.result?.purchaseTask ?? begin.previousResult?.purchaseTask ?? current.state.purchaseTask;
+        const verified = await verifiedState.update({ currentState: current.state, userMessage: text, pendingQuestion: priorTask?.pendingQuestion?.field ?? begin.previousResult?.questionFields[0] });
         understanding = verified.understanding;
-        checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, current.stateVersion, verified.state);
+        const purchaseTask = updatePurchaseTask({ previous: priorTask, previousState: current.state, currentState: verified.state, understanding, userMessage: text });
+        checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, current.stateVersion, { ...verified.state, purchaseTask });
       }
       const latest = await this.repository.getSession(sessionId, userId);
       if (checkpoint && latest?.inputVersion === begin.inputVersion && latest.appliedInputVersion === begin.inputVersion) {
@@ -280,11 +307,13 @@ export class ConversationRuntime {
         const fallbackContext = buildAgentContext({ session: latest, memories: latestMemory.memories, memoryVersion: latestMemory.version });
         const authorized = authorizeFinalDecision({ proposal: { kind: "direct", source: "fallback", reason: "RUNTIME_EXCEPTION" }, context: fallbackContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: latestMemory.version }, signals: understanding.signals });
         if (authorized.status !== "APPROVED" || !authorized.decision) throw error;
-        const fallback = composeResult(authorized.decision, checkpoint.state, audits,
+        const fallbackComposed = composeResult(authorized.decision, checkpoint.state, audits,
           { input: begin.inputVersion, state: checkpoint.stateVersion, knowledge: KNOWLEDGE_VERSION },
           { signals: understanding.signals, lifestyle: understanding.lifestyle, previousResult: begin.previousResult,
             updatedFields: understanding.delta.updates.map((item) => item.field), renderFallbackReason: "runtime_fallback", decisionTrace: decisionTrace(withDecision(fallbackContext, authorized.decision)),
             agentTrace: { planner: [], observations: [], authorization: authorized.status, authorizationReason: authorized.reason, fallbackReason: "RUNTIME_EXCEPTION", versions: fallbackContext.versions } });
+        const fallbackTask = completePurchaseTask(fallbackContext.purchaseTask, fallbackComposed);
+        const fallback = { ...fallbackComposed, purchaseTask: fallbackTask };
         if (await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, fallback)) {
           return { result: fallback, duplicate: false, stale: false };
         }

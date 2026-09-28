@@ -40,7 +40,8 @@ export interface RenderedCopy {
 
 const questionCopy: Partial<Record<StateField, string>> = {
   categories: "这次最想先解决哪一件：洁面、保湿、精华，还是旅行分装？",
-  budget: "如果要搭配着买，你希望总价大概控制在多少？我会按这个范围做取舍。",
+  budget: "这次预算大概想控制在多少？如果不设上限，也可以直接说不限预算。",
+  giftBoxType: "你说的礼盒，是想要 P301 这种旅行分装瓶礼盒，还是装护肤品的套装礼盒？",
   fragrancePreference: "香味这件事你在意吗？是可以接受，还是更想要无香的？",
   currentDiscomfort: "我先确认一下安全问题：现在还有刺痛、疼痛或破损吗？",
   sensitiveTendency: "你的皮肤平时容易敏感吗？",
@@ -144,6 +145,13 @@ function acknowledgedEmotion(signals: TurnSignal[], draft: DecisionDraft): Conve
 function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
   if (draft.action === "safety") return [{ id: "safety", text: "先别继续试新的或刺激性护理；如果疼痛、破损或不适一直没有缓解，建议尽快咨询专业人士。这一轮我先不推荐商品，也不作医疗诊断。" }];
   if (draft.action === "close") return [{ id: "close", text: "好，那这次就先停在这里。什么时候想再看看再来，不急。" }];
+  if (draft.action === "price_list") return [
+    { id: "price-list-intro", text: "可以先不说预算。我只把当前目录里相关商品的标价列给你，这次不替你定主推。" },
+    ...draft.candidateSkus.flatMap((sku) => {
+      const product = PRODUCTS_BY_SKU[sku];
+      return product ? [{ id: `price-list:${sku}`, text: `${productLabel(sku, product.name)}（${product.size}）手册标价 ${formatMoney(product.priceFen)}。` }] : [];
+    }),
+  ];
   if (draft.action === "policy_unknown") {
     const topics = fact<string[]>(state, "policyTopics") ?? [];
     const targetSku = draft.candidateSkus[0];

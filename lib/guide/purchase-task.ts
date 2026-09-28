@@ -36,6 +36,7 @@ function explicitGoal(understanding: TurnUnderstanding, text: string, currentVer
   const targetSku = understanding.delta.updates.find((item) => item.field === "targetSku")?.value;
   const validSku = typeof targetSku === "string" && PRODUCTS_BY_SKU[targetSku] ? targetSku : undefined;
   if (validCategories.length) return goal("categories", validCategories, currentVersion + 1, validSku && validCategories.includes(PRODUCTS_BY_SKU[validSku].category) ? validSku : undefined);
+  if (validSku) return goal("categories", [PRODUCTS_BY_SKU[validSku].category], currentVersion + 1, validSku);
   return null;
 }
 
@@ -75,7 +76,8 @@ export function stateForPurchaseTask(state: UserState, task: PurchaseTask): User
   if (task.goal.kind === "categories") {
     if (task.goal.categories.length) facts.categories = sourced("categories", task.goal.categories);
     else delete facts.categories;
-    if (task.goal.targetSku) facts.targetSku = sourced("targetSku", task.goal.targetSku);
+    const interruptedSku = ["price_interruption", "policy_interruption"].includes(task.turnAction.kind) ? fact<string>(state, "targetSku") : undefined;
+    if (task.goal.targetSku || interruptedSku) facts.targetSku = sourced("targetSku", task.goal.targetSku ?? interruptedSku!);
     else delete facts.targetSku;
   } else {
     delete facts.categories;
@@ -92,7 +94,7 @@ export function askPurchaseQuestion(task: PurchaseTask, field: StateField, reaso
 }
 
 export function completePurchaseTask(task: PurchaseTask, result: Pick<DecisionResult, "action" | "candidateSkus" | "recommendations">): PurchaseTask {
-  const displayed = ["recommend", "comparison_only"].includes(result.action)
+  const displayed = ["recommend", "comparison_only", "price_list"].includes(result.action)
     ? [...new Set([...task.displayedSkus, ...result.candidateSkus, ...result.recommendations.map((item) => item.sku)])]
     : task.displayedSkus;
   return { ...task, displayedSkus: displayed };
