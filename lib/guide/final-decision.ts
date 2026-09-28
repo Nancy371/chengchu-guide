@@ -36,6 +36,7 @@ export function safetyDecision(state: UserState): DecisionDraft {
 export function authorizeFinalDecision(input: { proposal: unknown; context: AgentContext; current: { input: number; state: number; knowledge: string; memory: number }; signals?: TurnSignal[] }): FinalAuthorizationResult {
   const { context, current } = input;
   if (context.versions.input !== current.input || context.versions.state !== current.state || context.versions.knowledge !== current.knowledge || current.knowledge !== KNOWLEDGE_VERSION || context.habits.version !== current.memory) return { status: "STALE", reason: "VERSION_MISMATCH" };
+  if (context.candidateEvaluation && (context.candidateEvaluation.versions.input !== current.input || context.candidateEvaluation.versions.state !== current.state || context.candidateEvaluation.versions.knowledge !== current.knowledge)) return { status: "STALE", reason: "CANDIDATE_VERSION_MISMATCH" };
   const proposal = parseFinalProposal(input.proposal);
   if (!proposal) return { status: "FALLBACK_REQUIRED", reason: "INVALID_PROPOSAL" };
   const state = context.userState as UserState;
@@ -70,6 +71,7 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
   if (safety.status === "active_risk") return { status: "FALLBACK_REQUIRED", reason: "SAFETY_STOP" };
   if (proposal.kind === "comparison_only") {
     const declined = input.signals?.some((signal) => signal.value === "decline_answer" && signal.subject === "self" && signal.temporal !== "historical");
+    if (context.candidateEvaluation && context.candidateEvaluation.outcome !== "compare" && !exhaustedLowRiskQuestion(context) && !declined) return { status: "REJECTED", reason: "COMPARISON_NOT_READY" };
     const peers = comparableFits(context);
     if (safety.status === "unclear" || context.purchaseTask.budget.status !== "limited" && context.purchaseTask.budget.status !== "unlimited" || !LOW_RISK_FIELDS.has(proposal.field) || context.requiredMissingFields.length !== 1 || context.requiredMissingFields[0] !== proposal.field || ((matchingProgress(context, proposal.field)?.askedCount ?? 0) < MAX_LOW_RISK_QUESTIONS && !declined) || peers.length !== 2 || proposal.skus.some((sku) => !peers.some((fit) => fit.sku === sku))) return { status: "REJECTED", reason: "COMPARISON_NOT_READY" };
     const fits = proposal.skus.map((sku) => context.productFits.find((fit) => fit.sku === sku));
@@ -83,6 +85,7 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
     return { status: "APPROVED", reason: "FACTUAL_COMPARISON_ONLY", decision: { action: "comparison_only", route: "direct", routeReason: "偏好尚未明确，仅展示通过资格检查的商品事实", questionFields: [], candidateSkus: [...proposal.skus], recommendations: [], productFits: [...context.productFits], evidence: evidence.filter((item) => proposal.evidenceIds.includes(item.id)), limitations: ["未指定主推商品"], pricingMode: "alternatives" } };
   }
   if (proposal.kind === "ask") {
+    if (context.candidateEvaluation && context.candidateEvaluation.selectedQuestion !== proposal.field) return { status: "FALLBACK_REQUIRED", reason: "QUESTION_NOT_SELECTED" };
     if (!context.requiredMissingFields.includes(proposal.field) || !proposal.questionGoal.trim() || !proposal.evidenceGap.trim()) return { status: "FALLBACK_REQUIRED", reason: "QUESTION_NOT_REQUIRED" };
     const draft: DecisionDraft = { action: "clarify", route: "reasoning", routeReason: "最终裁决选择先补充必要信息", questionFields: [proposal.field], candidateSkus: [], recommendations: [], productFits: [...context.productFits], evidence: [], limitations: safety.status === "unclear" ? ["安全信息未明确前不推荐商品"] : [] };
     return { status: "APPROVED", reason: "REQUIRED_FIELD", decision: draft };
@@ -97,6 +100,7 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
     return { status: "APPROVED", reason: "BUDGET_DECLINED_PRICE_LIST", decision: { action: "price_list", route: "direct", routeReason: "用户不提供预算，仅列出当前品类的已核实标价", questionFields: [], candidateSkus: [...proposal.skus], recommendations: [], productFits: [...context.candidateProducts], evidence: selected.map((product) => ({ id: `catalog:${product.sku}`, label: `${product.sku} 商品事实`, detail: `${product.name} · ¥${product.priceFen / 100}`, source: product.source, status: "supported" as const })), limitations: ["未指定主推商品"], pricingMode: proposal.skus.length === 1 ? "single" : "alternatives" } };
   }
   if (safety.status === "unclear") return { status: "FALLBACK_REQUIRED", reason: "SAFETY_UNCLEAR" };
+  if (context.candidateEvaluation && context.candidateEvaluation.outcome !== "ready") return { status: "FALLBACK_REQUIRED", reason: "CANDIDATE_NOT_READY" };
   if (context.purchaseTask.budget.status !== "limited" && context.purchaseTask.budget.status !== "unlimited") return { status: "FALLBACK_REQUIRED", reason: "BUDGET_REQUIRED" };
   if (context.requiredMissingFields.length) return { status: "FALLBACK_REQUIRED", reason: "REQUIRED_FIELD_MISSING" };
   const fits = proposal.skus.map((sku) => context.productFits.find((fit) => fit.sku === sku));

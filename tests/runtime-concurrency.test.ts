@@ -175,7 +175,7 @@ test("an unauthorized final reasoner SKU is rejected and the fallback is authori
     { action: "finalize", arguments: {}, evidenceNeeded: "候选", expectedProgress: "进入裁决" },
   ];
   const agent = runtime(repo, { plannerActions: choices, reasonerProposal: { kind: "recommend", skus: ["P201"], evidenceIds: ["catalog:P201"], relation: "single" } });
-  const result = (await agent.handleTurn("s", "r1", "我是干皮，预算200，想买洗面奶")).result;
+  const result = (await agent.handleTurn("s", "r1", "我是干皮，预算200，只要无香，想买洗面奶")).result;
   assert.equal(result.agentTrace?.reasonerProposal?.kind, "recommend");
   assert.equal(result.agentTrace?.fallbackReason, "SKU_NOT_AUTHORIZED");
   assert.equal(result.agentTrace?.authorization, "APPROVED");
@@ -195,7 +195,7 @@ test("late planner and final reasoner results cannot overwrite a newer safety tu
       ...(blockedStage === "planner" ? { plannerGate: gate } : { reasonerGate: gate }),
       reasonerProposal: { kind: "recommend", skus: ["P101"], evidenceIds: ["catalog:P101"], relation: "single" },
     });
-    const old = agent.handleTurn("s", "r1", "我是干皮，预算200，想买洗面奶");
+    const old = agent.handleTurn("s", "r1", "我是干皮，预算200，只要无香，想买洗面奶");
     await until(() => repo.session.appliedInputVersion === 1);
     const newer = await agent.handleTurn("s", "r2", "现在脸很疼");
     assert.equal(newer.result.action, "safety");
@@ -228,7 +228,7 @@ test("four unclear low-risk answers end in a price-correct comparison without a 
   assert.equal(compared.agentTrace?.authorizationReason, "FACTUAL_COMPARISON_ONLY");
 });
 
-test("a price interruption retains the unresolved budget without counting as an answer", async () => {
+test("a price interruption retains the unresolved need question without counting as an answer", async () => {
   const repo = new MemoryRepository();
   const agent = runtime(repo);
   const first = (await agent.handleTurn("s", "p1", "想买洗面奶")).result;
@@ -237,7 +237,7 @@ test("a price interruption retains the unresolved budget without counting as an 
   assert.equal(price.action, "price_answer");
   assert.equal(price.clarification?.askedCount, 1);
   const resumed = (await agent.handleTurn("s", "p3", "还可以")).result;
-  assert.deepEqual(resumed.questionFields, ["budget"]);
+  assert.deepEqual(resumed.questionFields, ["skinType"]);
   assert.equal(resumed.clarification?.askedCount, 2);
 });
 
@@ -290,28 +290,30 @@ test("declining an unresolved safety question does not recommend or ask again th
   assert.deepEqual(retry.questionFields, ["currentDiscomfort"]);
 });
 
-test("a purchase advances from budget to preference instead of stopping after an answer", async () => {
+test("a purchase advances from preference to budget instead of stopping after an answer", async () => {
   const repo = new MemoryRepository();
   const agent = runtime(repo);
   const first = (await agent.handleTurn("s", "flow1", "我是油皮，想买洗面奶")).result;
-  assert.deepEqual(first.questionFields, ["budget"]);
-  assert.equal(first.purchaseTask?.pendingQuestion?.field, "budget");
-  const budget = (await agent.handleTurn("s", "flow2", "预算200")).result;
-  assert.deepEqual(budget.questionFields, ["fragrancePreference"]);
-  const preference = (await agent.handleTurn("s", "flow3", "我喜欢玫瑰香")).result;
-  assert.equal(preference.action, "recommend");
-  assert.ok(preference.recommendations.length > 0);
+  assert.deepEqual(first.questionFields, ["fragrancePreference"]);
+  const preference = (await agent.handleTurn("s", "flow2", "我喜欢玫瑰香")).result;
+  assert.deepEqual(preference.questionFields, ["budget"]);
   assert.equal(preference.state.facts.fragranceNote?.value, "玫瑰香");
+  const budget = (await agent.handleTurn("s", "flow3", "200")).result;
+  assert.equal(budget.action, "recommend");
+  assert.ok(budget.recommendations.length > 0);
 });
 
 test("a bare number answers the pending budget question without losing the known category", async () => {
   const repo = new MemoryRepository();
   const agent = runtime(repo);
   const first = (await agent.handleTurn("s", "bare-budget1", "想买支洗面奶")).result;
-  assert.deepEqual(first.questionFields, ["budget"]);
+  assert.deepEqual(first.questionFields, ["skinType"]);
   assert.doesNotMatch(first.reply, /还没说.*哪类/);
-
-  const answered = (await agent.handleTurn("s", "bare-budget2", "200")).result;
+  const skin = (await agent.handleTurn("s", "bare-budget2", "偏油")).result;
+  assert.deepEqual(skin.questionFields, ["fragrancePreference"]);
+  const scent = (await agent.handleTurn("s", "bare-budget3", "带香可以")).result;
+  assert.deepEqual(scent.questionFields, ["budget"]);
+  const answered = (await agent.handleTurn("s", "bare-budget4", "200")).result;
   assert.notDeepEqual(answered.questionFields, ["budget"]);
   assert.equal(answered.state.facts.budget?.value, 20_000);
   assert.equal(answered.purchaseTask?.budget.status, "limited");
@@ -322,8 +324,11 @@ test("declining budget lists related prices without inventing a main recommendat
   const repo = new MemoryRepository();
   const agent = runtime(repo);
   const first = (await agent.handleTurn("s", "budget1", "想买洗面奶")).result;
-  assert.deepEqual(first.questionFields, ["budget"]);
-  const listed = (await agent.handleTurn("s", "budget2", "预算不想说，别再问了")).result;
+  assert.deepEqual(first.questionFields, ["skinType"]);
+  await agent.handleTurn("s", "budget2", "偏油");
+  const needBudget = (await agent.handleTurn("s", "budget3", "带香可以")).result;
+  assert.deepEqual(needBudget.questionFields, ["budget"]);
+  const listed = (await agent.handleTurn("s", "budget4", "预算不想说，别再问了")).result;
   assert.equal(listed.action, "price_list");
   assert.deepEqual(listed.recommendations, []);
   assert.match(listed.reply, /¥169/);
@@ -342,7 +347,7 @@ test("gift-box ambiguity and a changed category create a fresh budget question",
   assert.deepEqual(travel.purchaseTask?.goal.categories, ["travel"]);
 
   const switched = (await agent.handleTurn("s", "gift3", "现在改看保湿面霜")).result;
-  assert.deepEqual(switched.questionFields, ["budget"]);
+  assert.deepEqual(switched.questionFields, ["skinType"]);
   assert.deepEqual(switched.purchaseTask?.goal.categories, ["moisturizer"]);
   assert.deepEqual(switched.purchaseTask?.displayedSkus, []);
 });

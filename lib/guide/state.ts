@@ -394,7 +394,8 @@ export function applyDelta(state: UserState, delta: StateDelta): UserState {
   const uncertain = symptomFacts.filter((item) => item.value === "unclear");
   const hadSpecificRisk = symptomFields.some((field) => state.facts[field]?.value === true || state.facts[field]?.value === "unclear");
   const derived = unresolvedLegacyDiscomfort || active.length ? true : uncertain.length ? "unclear" :
-    explicitRecovery || (hadSpecificRisk && symptomFacts.length > 0 && symptomFacts.every((item) => item.value === false)) ? false : undefined;
+    explicitRecovery || (hadSpecificRisk && symptomFacts.length > 0 && symptomFacts.every((item) => item.value === false)) ||
+    state.facts.currentDiscomfort?.value === false ? false : undefined;
   if (derived !== undefined) {
     const source = active.at(-1) ?? uncertain.at(-1) ??
       (unresolvedLegacyDiscomfort ? state.facts.currentDiscomfort : undefined) ??

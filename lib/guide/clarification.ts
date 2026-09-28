@@ -1,11 +1,11 @@
 import { activeCategories } from "./tools";
 import { PRODUCTS_BY_SKU } from "./catalog";
 import { decide } from "./decision";
+import { evaluateCandidates, LOW_RISK_FIELDS, MAX_LOW_RISK_QUESTIONS } from "./candidate-evaluation";
 import { fact } from "./state";
 import type { AgentContext, ClarificationProgress, DecisionDraft, ProductFit, PurchaseTask, StateField, UserState } from "./types";
 
-export const MAX_LOW_RISK_QUESTIONS = 4;
-export const LOW_RISK_FIELDS = new Set<StateField>(["skinType", "fragrancePreference", "texturePreference", "coreConcern"]);
+export { MAX_LOW_RISK_QUESTIONS, LOW_RISK_FIELDS };
 
 export function clarificationGoalKey(state: UserState, task?: PurchaseTask): string {
   const activeTask = task ?? state.purchaseTask;
@@ -19,24 +19,20 @@ export function clarificationCandidateKey(fits: ReadonlyArray<ProductFit>): stri
 }
 
 export function requiredInformation(context: AgentContext, baseline: DecisionDraft = decide(context.userState as UserState, [...context.habits.relevant])): StateField[] {
-  if (context.hardConstraints.safety === "active_risk") return [];
-  if (context.hardConstraints.safety === "unclear") return ["currentDiscomfort"];
-  if (context.purchaseTask.goal.kind === "gift_box_ambiguous") return ["giftBoxType"];
-  if (context.purchaseTask.goal.kind === "unsupported_skincare_gift_box") return [];
-  if (!context.goal.categories.length && !context.goal.targetSku) return ["categories"];
-  if (context.purchaseTask.budget.status === "unknown") return ["budget"];
-  if (context.purchaseTask.budget.status === "declined") return [];
-  if (baseline.action !== "clarify") return [];
-  const eligible = context.productFits.filter((fit) => fit.status === "eligible");
-  const delegated = fact<boolean>(context.userState as UserState, "delegateChoice") === true;
-  return [...new Set(baseline.questionFields)].filter((field) => {
-    if (!LOW_RISK_FIELDS.has(field)) return true;
-    if (eligible.length === 1 || delegated) return false;
-    return true;
-  }).slice(0, 1);
+  void baseline;
+  const field = evaluateCandidates(context).selectedQuestion;
+  return field ? [field] : [];
 }
 
 export function matchingProgress(context: AgentContext, field: StateField): ClarificationProgress | undefined {
+  const savedCount = context.purchaseTask.questionCounts?.[field];
+  if (savedCount) return {
+    goalKey: clarificationGoalKey(context.userState as UserState, context.purchaseTask),
+    candidateKey: clarificationCandidateKey(context.productFits),
+    field,
+    askedCount: savedCount,
+    reason: context.purchaseTask.pendingQuestion?.field === field ? context.purchaseTask.pendingQuestion.reason : "此前已问过该必要信息",
+  };
   if (context.purchaseTask.pendingQuestion?.field === field) {
     return {
       goalKey: clarificationGoalKey(context.userState as UserState, context.purchaseTask),

@@ -110,6 +110,13 @@ test("short amount answers only become budgets while a budget question is pendin
   assert.equal(fact(unrelated.state, "budget"), undefined);
 });
 
+test("explicitly stable current skin status remains verified across a later vague preference answer", async () => {
+  const first = await verifiedState.update({ currentState: empty(), userMessage: "想买果酸，现在状态稳定" });
+  const second = await verifiedState.update({ currentState: first.state, userMessage: "还可以", pendingQuestion: "sensitiveTendency" });
+  assert.equal(fact(second.state, "currentDiscomfort"), false);
+  assert.equal(second.state.facts.currentDiscomfort?.quote, "现在状态稳定");
+});
+
 test("a vague answer to the pending sensitivity question remains unconfirmed", async () => {
   const initial = (await verifiedState.update({ currentState: empty(), userMessage: "想买果酸，用过果酸，现在状态稳定" })).state;
   const vague = await verifiedState.update({ currentState: initial, userMessage: "还可以", pendingQuestion: "sensitiveTendency", extract: async () => ({ audit, proposal: { updates: [{ field: "sensitiveTendency", value: false, quote: "还可以", status: "confirmed" }], signals: [{ kind: "communication", value: "answer_ambiguous", quote: "还可以", explicit: true, subject: "self", temporal: "current" }], lifestyle: [] } }) });

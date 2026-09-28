@@ -1,8 +1,8 @@
 import { PRODUCTS, PRODUCTS_BY_SKU } from "./catalog";
-import { decide } from "./decision";
 import { checkBudget, checkEligibility, checkSafety, compareProducts, searchProducts } from "./tools";
 import { comparableFits, exhaustedLowRiskQuestion, requiredInformation } from "./clarification";
-import type { AgentContext, ModelAudit, PlannerAction, ProductFit, StateField, ToolObservation, UserState } from "./types";
+import { evaluateCandidates } from "./candidate-evaluation";
+import type { AgentContext, ModelAudit, PlannerAction, ProductFit, StateField, ToolObservation } from "./types";
 
 export const MAX_PLANNER_STEPS = 5;
 const MIN_FINAL_RESERVE_MS = 22_000;
@@ -31,6 +31,12 @@ export function compilePlannerContext(context: AgentContext) {
     clarification: context.clarification ? { field: context.clarification.field, askedCount: context.clarification.askedCount } : null,
     rawCandidateSkus: context.rawCandidateSkus,
     productFits: context.productFits.map((fit) => ({ sku: fit.sku, status: fit.status, matches: fit.matches, missing: fit.missing, tradeoffs: fit.tradeoffs })),
+    candidateEvaluation: context.candidateEvaluation ? {
+      outcome: context.candidateEvaluation.outcome,
+      requiredGap: context.candidateEvaluation.requiredGap,
+      selectedQuestion: context.candidateEvaluation.selectedQuestion,
+      questionImpact: context.candidateEvaluation.questionImpact,
+    } : null,
     observations: context.observations.map(({ order, tool, outcome }) => ({ order, tool, outcome })).slice(-10),
     allowedActions: context.allowedActions,
     step: context.step,
@@ -117,11 +123,12 @@ export function executeProductSearch(current: AgentContext, category: "cleanser"
   const rawCandidateSkus = PRODUCTS.map((product) => product.sku);
   const productFits = accepted;
   const provisional: AgentContext = { ...current, rawCandidateSkus, productFits, candidateProducts, rejectedProducts, observations, completedActions: observations.map((item) => item.tool) };
-  const requiredMissingFields = requiredInformation(provisional, decide(current.userState as UserState, [...current.habits.relevant]));
+  const candidateEvaluation = evaluateCandidates(provisional);
+  const requiredMissingFields = requiredInformation(provisional);
   const searched = new Set([...completed, `search:${category}`]);
   const moreSearches = current.goal.categories.some((item) => !searched.has(`search:${item}`));
   const eligibleCount = productFits.filter((fit) => fit.status === "eligible").length;
-  const context: AgentContext = { ...provisional, requiredMissingFields, pendingQuestions: requiredMissingFields,
+  const context: AgentContext = { ...provisional, candidateEvaluation, requiredMissingFields, pendingQuestions: requiredMissingFields,
     allowedActions: moreSearches ? ["search_products"] : requiredMissingFields.length ? ["ask_user"] : eligibleCount >= 2 ? ["compare_products", "finalize"] : eligibleCount === 1 ? ["finalize"] : [] };
   return { context, moreSearches, eligibleCount, safetyStop: false };
 }

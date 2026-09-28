@@ -64,6 +64,7 @@ export interface PurchaseGoal {
 export interface PurchaseTask {
   goal: PurchaseGoal;
   pendingQuestion?: { field: StateField; askedCount: number; reason: string };
+  questionCounts?: Partial<Record<StateField, number>>;
   displayedSkus: string[];
   turnAction: PurchaseTurnAction;
   budget: { status: "unknown" | "limited" | "unlimited" | "declined"; fen?: number; goalVersion: number };
@@ -270,6 +271,17 @@ export interface DecisionTrace {
   eligibility: Array<{ sku: string; status: ProductFit["status"] }>;
   versions: DecisionResult["versions"];
   routeReason: string;
+  candidateEvaluation?: Pick<CandidateEvaluation, "requiredGap" | "selectedQuestion" | "outcome" | "questionImpact">;
+}
+
+export interface CandidateEvaluation {
+  productFits: ReadonlyArray<ProductFit>;
+  rejected: AgentContext["rejectedProducts"];
+  requiredGap?: StateField;
+  selectedQuestion?: StateField;
+  questionImpact?: string;
+  outcome: "safety" | "clarify" | "ready" | "compare" | "budget_conflict" | "unavailable";
+  versions: DecisionResult["versions"];
 }
 
 export interface AgentContext {
@@ -280,6 +292,7 @@ export interface AgentContext {
   rawCandidateSkus: ReadonlyArray<string>;
   productFits: ReadonlyArray<ProductFit>;
   rejectedProducts: ReadonlyArray<{ sku: string; reason: string; stage: "safety" | "eligibility" | "hard_constraint" | "budget" | "already_displayed" }>;
+  candidateEvaluation?: CandidateEvaluation;
   hardConstraints: { safety: "active_risk" | "unclear" | "explicitly_stable" | "not_provided"; budgetStatus: PurchaseTask["budget"]["status"]; budgetFen?: number; fragranceFree: boolean };
   softPreferences: { skinType?: string; fragrance?: string; concern?: string };
   requiredMissingFields: ReadonlyArray<StateField>;

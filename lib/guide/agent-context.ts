@@ -99,6 +99,12 @@ export function decisionTrace(context: AgentContext): DecisionTrace {
     eligibility: context.candidateProducts.map(({ sku, status }) => ({ sku, status })),
     versions: context.versions,
     routeReason: context.currentDecision?.routeReason ?? "",
+    ...(context.candidateEvaluation ? { candidateEvaluation: {
+      outcome: context.candidateEvaluation.outcome,
+      requiredGap: context.candidateEvaluation.requiredGap,
+      selectedQuestion: context.candidateEvaluation.selectedQuestion,
+      questionImpact: context.candidateEvaluation.questionImpact,
+    } } : {}),
   };
 }
 

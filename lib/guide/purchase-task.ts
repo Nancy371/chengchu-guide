@@ -48,11 +48,13 @@ export function updatePurchaseTask(input: { previous?: PurchaseTask; previousSta
   const changedGoal = proposedGoal && proposedGoal.key !== previous.goal.key;
   const nextGoal = changedGoal ? proposedGoal : previous.goal;
   let pendingQuestion = previous.pendingQuestion;
+  let questionCounts = previous.questionCounts ?? {};
   let displayedSkus = previous.displayedSkus;
   let budget = previous.budget;
 
   if (changedGoal) {
     pendingQuestion = undefined;
+    questionCounts = {};
     displayedSkus = [];
     budget = { status: "unknown", goalVersion: nextGoal.version };
   }
@@ -66,7 +68,7 @@ export function updatePurchaseTask(input: { previous?: PurchaseTask; previousSta
   if (action.kind === "decline_answer") pendingQuestion = undefined;
   if (action.kind === "end") pendingQuestion = undefined;
 
-  return { goal: nextGoal, ...(pendingQuestion ? { pendingQuestion } : {}), displayedSkus, turnAction: action, budget, updatedTurn: input.currentState.turn };
+  return { goal: nextGoal, ...(pendingQuestion ? { pendingQuestion } : {}), questionCounts, displayedSkus, turnAction: action, budget, updatedTurn: input.currentState.turn };
 }
 
 export function stateForPurchaseTask(state: UserState, task: PurchaseTask): UserState {
@@ -89,8 +91,9 @@ export function stateForPurchaseTask(state: UserState, task: PurchaseTask): User
 }
 
 export function askPurchaseQuestion(task: PurchaseTask, field: StateField, reason: string): PurchaseTask {
-  const same = task.pendingQuestion?.field === field;
-  return { ...task, pendingQuestion: { field, askedCount: same ? task.pendingQuestion!.askedCount + 1 : 1, reason } };
+  const priorCount = task.questionCounts?.[field] ?? (task.pendingQuestion?.field === field ? task.pendingQuestion.askedCount : 0);
+  const askedCount = priorCount + 1;
+  return { ...task, questionCounts: { ...task.questionCounts, [field]: askedCount }, pendingQuestion: { field, askedCount, reason } };
 }
 
 export function completePurchaseTask(task: PurchaseTask, result: Pick<DecisionResult, "action" | "candidateSkus" | "recommendations">): PurchaseTask {

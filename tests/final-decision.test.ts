@@ -20,7 +20,7 @@ async function searched(...turns: string[]) {
 function current(context: Awaited<ReturnType<typeof searched>>) { return { ...context.versions, memory: context.habits.version }; }
 
 test("final reasoner may recommend only eligible, evidenced, budgeted candidates", async () => {
-  const context = await searched("我是干皮，预算200，想买洗面奶");
+  const context = await searched("我是干皮，预算200，只要无香，想买洗面奶");
   const good = authorizeFinalDecision({ context, current: current(context), proposal: { kind: "recommend", skus: ["P101"], evidenceIds: ["catalog:P101"], relation: "single" } });
   assert.equal(good.status, "APPROVED");
   assert.equal(good.decision?.totalFen, 16900);
@@ -34,11 +34,11 @@ test("final reasoner may recommend only eligible, evidenced, budgeted candidates
 
 test("question field must be a current required gap", async () => {
   const context = await searched("想买洗面奶");
-  assert.equal(context.requiredMissingFields.includes("budget"), true);
-  const ask = authorizeFinalDecision({ context, current: current(context), proposal: { kind: "ask", field: "budget", questionGoal: "确认本次预算", evidenceGap: "预算未提供" } });
+  assert.equal(context.requiredMissingFields.includes("skinType"), true);
+  const ask = authorizeFinalDecision({ context, current: current(context), proposal: { kind: "ask", field: "skinType", questionGoal: "确认影响取舍的肤质", evidenceGap: "肤质未提供" } });
   assert.equal(ask.status, "APPROVED");
-  assert.equal(ask.decision?.questionFields[0], "budget");
-  assert.equal(authorizeFinalDecision({ context, current: current(context), proposal: { kind: "ask", field: "skinType", questionGoal: "肤质", evidenceGap: "肤质" } }).status, "FALLBACK_REQUIRED");
+  assert.equal(ask.decision?.questionFields[0], "skinType");
+  assert.equal(authorizeFinalDecision({ context, current: current(context), proposal: { kind: "ask", field: "budget", questionGoal: "预算", evidenceGap: "预算" } }).status, "FALLBACK_REQUIRED");
 });
 
 test("safety, budget and version changes cannot be overridden", async () => {
