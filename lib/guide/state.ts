@@ -1,5 +1,5 @@
 import { PRODUCTS_BY_SKU } from "./catalog";
-import type { FactValue, LifestyleObservation, SignalKind, SignalValue, SourcedFact, StateDelta, StateField, TurnSignal, TurnUnderstanding, UserState } from "./types";
+import type { FactValue, LifestyleObservation, PurchaseTurnAction, SignalKind, SignalValue, SourcedFact, StateDelta, StateField, TurnSignal, TurnUnderstanding, UserState } from "./types";
 
 export const EMPTY_STATE: UserState = { facts: {}, history: [], turn: 0 };
 
@@ -9,6 +9,7 @@ const fields = new Set<StateField>([
   "stinging", "pain", "skinDamage", "otherDiscomfort",
   "existingProducts", "travelNeed", "useOccasions", "texturePreference", "delegateChoice", "coreConcern", "channelPreference",
   "claimedOnlinePrice", "policyTopics",
+  "giftBoxType",
 ]);
 
 function update(field: StateField, value: FactValue, text: string, status: "confirmed" | "unclear" = "confirmed") {
@@ -58,7 +59,10 @@ export function deterministicExtract(text: string): StateDelta {
   if (/分装|小瓶|出差|旅行/.test(compact)) categories.push("travel");
   if (/只买.*(?:洁面|洗面奶)/.test(compact)) categories.splice(0, categories.length, "cleanser");
   if (/只买.*(?:保湿|面霜|乳液|凝露)/.test(compact)) categories.splice(0, categories.length, "moisturizer");
+  if (/旅行.*礼盒|分装.*礼盒|礼盒.*(?:旅行|分装)/.test(compact)) categories.splice(0, categories.length, "travel");
   if (categories.length) updates.push(update("categories", [...new Set(categories)], raw));
+  if (/旅行.*礼盒|分装.*礼盒|礼盒.*(?:旅行|分装)/.test(compact)) updates.push(update("giftBoxType", "travel_kit", raw));
+  else if (/护肤(?:品)?礼盒|护肤套装礼盒/.test(compact)) updates.push(update("giftBoxType", "skincare_gift_box", raw));
 
   const sku = compact.match(/P[123]\d{2}/i)?.[0]?.toUpperCase();
   if (sku) updates.push(update("targetSku", sku, raw));
@@ -148,6 +152,19 @@ function isExplicitRejection(text: string) {
   return !/(?:还是|改成|改为|只看|看看|想看|想买|推荐|洁面|洗面奶|保湿|面霜|乳液|精华|分装)/.test(text);
 }
 
+export function classifyPurchaseAction(text: string, pendingQuestion?: StateField): PurchaseTurnAction {
+  const compact = text.replace(/\s+/g, "");
+  if (/不要了|不买了|别推荐|不用推荐|不想买|先不买/.test(compact)) return { kind: "end", quote: text };
+  if (/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(compact)) return { kind: "decline_answer", quote: text };
+  if (/还有(?:其他|别的).*(?:推荐|选择|款)|(?:换|看)(?:一个|一款|别的)|别的呢|其他呢|不要这款/.test(compact)) return { kind: "request_alternative", quote: text };
+  if (/礼盒/.test(compact) && !/赠品/.test(compact)) return { kind: "switch_goal", quote: text };
+  if (/想买|只买|改成|改看|换成|还是看|要一套|给我选/.test(compact) && /洗面奶|洁面|保湿|面霜|乳液|凝露|精华|果酸|分装|旅行/.test(compact)) return { kind: "switch_goal", quote: text };
+  if (/多少钱|价格|售价|贵不贵/.test(compact)) return { kind: "price_interruption", quote: text };
+  if (/促销|优惠|活动|赠品|送什么|同价|差价|退换|退货|换货|授权|正品|真假/.test(compact)) return { kind: "policy_interruption", quote: text };
+  if (pendingQuestion) return { kind: "answer_question", quote: text };
+  return { kind: "continue", quote: text };
+}
+
 export function deterministicUnderstand(text: string, pendingQuestion?: StateField): TurnUnderstanding {
   const raw = text.trim();
   const compact = raw.replace(/\s+/g, "");
@@ -194,7 +211,7 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if (pendingQuestion && !delta.updates.some((item) => item.field === pendingQuestion) && /^(?:我)?(?:觉得)?(?:还可以|还行|一般|差不多|说不好|不太确定|看情况)(?:吧|的)?[。！!，,]*$/.test(compact)) {
     signals.push(signal("communication", "answer_ambiguous", raw, subject));
   }
-  return { delta, signals, lifestyle };
+  return { delta, signals, lifestyle, purchaseAction: classifyPurchaseAction(raw, pendingQuestion) };
 }
 
 export function validateDelta(delta: unknown, text: string): StateDelta | null {
@@ -235,6 +252,7 @@ function validFieldValue(field: StateField, value: unknown): value is FactValue 
     coreConcern: ["roughness", "fresh_texture", "simple_routine"],
     texturePreference: ["lightweight", "avoid_tightness", "no_preference"],
     channelPreference: ["online", "offline"],
+    giftBoxType: ["travel_kit", "skincare_gift_box"],
   };
   if (field === "budget" || field === "claimedOnlinePrice") return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
   if (["sensitiveTendency", "acidExperience", "travelNeed", "delegateChoice"].includes(field)) return typeof value === "boolean";
@@ -260,7 +278,7 @@ const habitKinds = new Set(["routine_preference", "frequent_travel", "fragrance_
 
 export function validateUnderstanding(value: unknown, text: string, pendingQuestion?: StateField): TurnUnderstanding | null {
   if (!value || typeof value !== "object") return null;
-  const raw = value as { updates?: unknown; signals?: unknown; lifestyle?: unknown };
+  const raw = value as { updates?: unknown; signals?: unknown; lifestyle?: unknown; purchaseAction?: unknown };
   const delta = validateDelta({ updates: raw.updates }, text);
   if (!delta) return null;
   const signals = Array.isArray(raw.signals) ? raw.signals.flatMap((item): TurnSignal[] => {
@@ -280,7 +298,16 @@ export function validateUnderstanding(value: unknown, text: string, pendingQuest
     if (candidate.kind === "fragrance_preference" && candidate.value === "accepts_fragrance" && !/(?:喜欢香味|可以接受香味|能接受香味)/.test(candidate.quote)) return [];
     return [{ kind: candidate.kind, value: candidate.value as string | boolean, quote: candidate.quote, scope: candidate.scope === "durable" ? "durable" : candidate.scope === "session" ? "session" : "turn", explicit: candidate.explicit !== false, subject: candidate.subject === "other" ? "other" : candidate.subject === "unknown" ? "unknown" : "self" }];
   }) : [];
-  return { delta, signals, lifestyle };
+  let purchaseAction: PurchaseTurnAction | undefined;
+  if (raw.purchaseAction && typeof raw.purchaseAction === "object") {
+    const candidate = raw.purchaseAction as Partial<PurchaseTurnAction>;
+    const kinds = new Set<PurchaseTurnAction["kind"]>(["answer_question", "switch_goal", "request_alternative", "price_interruption", "policy_interruption", "decline_answer", "end", "continue"]);
+    if (candidate.kind && kinds.has(candidate.kind) && typeof candidate.quote === "string" && candidate.quote && text.includes(candidate.quote)) {
+      const local = classifyPurchaseAction(candidate.quote, pendingQuestion);
+      if (local.kind === candidate.kind) purchaseAction = { kind: candidate.kind, quote: candidate.quote };
+    }
+  }
+  return { delta, signals, lifestyle, purchaseAction };
 }
 
 export function mergeUnderstanding(primary: TurnUnderstanding | null, fallback: TurnUnderstanding): TurnUnderstanding {
@@ -290,7 +317,7 @@ export function mergeUnderstanding(primary: TurnUnderstanding | null, fallback: 
     for (const item of [...first, ...second]) byKey.set(`${item.kind}:${String(item.value)}`, item);
     return [...byKey.values()];
   };
-  return { delta, signals: mergeUnique(primary?.signals, fallback.signals), lifestyle: mergeUnique(primary?.lifestyle, fallback.lifestyle) };
+  return { delta, signals: mergeUnique(primary?.signals, fallback.signals), lifestyle: mergeUnique(primary?.lifestyle, fallback.lifestyle), purchaseAction: primary?.purchaseAction ?? fallback.purchaseAction };
 }
 
 export function mergeDeltas(primary: StateDelta | null, fallback: StateDelta): StateDelta {

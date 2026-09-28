@@ -3,6 +3,7 @@ import { decide } from "./decision";
 import { effectiveStateView, fact } from "./state";
 import { checkSafety } from "./tools";
 import { clarificationGoalKey } from "./clarification";
+import { rebuildPurchaseTask, stateForPurchaseTask } from "./purchase-task";
 import type { AgentContext, DecisionDraft, DecisionTrace, HabitMemory, ProductFit, SessionRecord, StateField, ToolObservation, UserState } from "./types";
 
 function relevantHabits(state: UserState, memories: readonly HabitMemory[]): HabitMemory[] {
@@ -22,14 +23,18 @@ function allowedActions(state: UserState, fits: ReadonlyArray<ProductFit> = []):
 }
 
 export function buildAgentContext(input: { session: SessionRecord; memories?: readonly HabitMemory[]; memoryVersion?: number; remainingTimeBudget?: number; previousResult?: SessionRecord["result"] }): AgentContext {
-  const state = structuredClone(input.session.state);
+  const checkpointState = structuredClone(input.session.state);
+  const purchaseTask = structuredClone(input.previousResult?.purchaseTask ?? checkpointState.purchaseTask ?? rebuildPurchaseTask(checkpointState));
+  const state = stateForPurchaseTask(checkpointState, purchaseTask);
   const categories = fact<string[]>(state, "categories") ?? [];
   const storedSku = fact<string>(state, "targetSku");
   const targetSku = storedSku && PRODUCTS_BY_SKU[storedSku] && (!categories.length || categories.includes(PRODUCTS_BY_SKU[storedSku].category)) ? storedSku : undefined;
   const intent = fact<string>(state, "intent");
   const policyTopics = fact<string[]>(state, "policyTopics") ?? [];
   const safety = checkSafety({ userState: state });
-  const type: AgentContext["goal"]["type"] = policyTopics.length ? "policy" : intent === "price" ? "price" : categories.length || targetSku ? "buy_product" : "unknown";
+  const type: AgentContext["goal"]["type"] = purchaseTask.turnAction.kind === "policy_interruption" || policyTopics.length ? "policy"
+    : purchaseTask.turnAction.kind === "price_interruption" || intent === "price" ? "price"
+      : purchaseTask.goal.kind !== "categories" || categories.length || targetSku ? "buy_product" : "unknown";
   return {
     goal: { type, categories, ...(targetSku ? { targetSku } : {}) },
     userState: state,
@@ -38,14 +43,15 @@ export function buildAgentContext(input: { session: SessionRecord; memories?: re
     rawCandidateSkus: [],
     productFits: [],
     rejectedProducts: [],
-    hardConstraints: { safety: safety.status, budgetFen: fact<number>(state, "budget"), fragranceFree: fact<string>(state, "fragrancePreference") === "must_be_fragrance_free" },
+    hardConstraints: { safety: safety.status, budgetStatus: purchaseTask.budget.status, ...(purchaseTask.budget.status === "limited" ? { budgetFen: purchaseTask.budget.fen } : {}), fragranceFree: fact<string>(state, "fragrancePreference") === "must_be_fragrance_free" },
     softPreferences: { skinType: fact<string>(state, "skinType"), fragrance: fact<string>(state, "fragrancePreference"), concern: fact<string>(state, "coreConcern") },
-    requiredMissingFields: categories.length || targetSku ? [] : ["categories"],
+    requiredMissingFields: purchaseTask.goal.kind === "gift_box_ambiguous" ? ["giftBoxType"] : categories.length || targetSku ? [] : ["categories"],
     currentDecision: null,
     completedActions: [],
     observations: [],
     pendingQuestions: [],
-    ...(input.previousResult?.clarification?.goalKey === clarificationGoalKey(state) ? { clarification: input.previousResult.clarification } : {}),
+    ...(input.previousResult?.clarification?.goalKey === clarificationGoalKey(state, purchaseTask) ? { clarification: input.previousResult.clarification } : {}),
+    purchaseTask,
     allowedActions: allowedActions(state),
     step: 0,
     remainingTimeBudget: input.remainingTimeBudget ?? 40_000,

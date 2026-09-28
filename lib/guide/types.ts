@@ -22,6 +22,7 @@ export type StateField =
   | "coreConcern"
   | "channelPreference"
   | "claimedOnlinePrice"
+  | "giftBoxType"
   | "policyTopics";
 
 export type FactValue = string | number | boolean | string[];
@@ -48,6 +49,25 @@ export interface UserState {
   turn: number;
   /** Unresolved aggregate risk from a session saved before symptom facts existed. */
   unresolvedLegacyDiscomfort?: boolean;
+  purchaseTask?: PurchaseTask;
+}
+
+export type PurchaseTurnActionKind = "answer_question" | "switch_goal" | "request_alternative" | "price_interruption" | "policy_interruption" | "decline_answer" | "end" | "continue";
+export interface PurchaseTurnAction { kind: PurchaseTurnActionKind; quote: string }
+export interface PurchaseGoal {
+  kind: "categories" | "gift_box_ambiguous" | "unsupported_skincare_gift_box";
+  categories: Product["category"][];
+  targetSku?: string;
+  version: number;
+  key: string;
+}
+export interface PurchaseTask {
+  goal: PurchaseGoal;
+  pendingQuestion?: { field: StateField; askedCount: number; reason: string };
+  displayedSkus: string[];
+  turnAction: PurchaseTurnAction;
+  budget: { status: "unknown" | "limited" | "unlimited" | "declined"; fen?: number; goalVersion: number };
+  updatedTurn: number;
 }
 
 export type SignalKind = "emotion" | "communication" | "lifestyle";
@@ -80,6 +100,7 @@ export interface TurnUnderstanding {
   delta: StateDelta;
   signals: TurnSignal[];
   lifestyle: LifestyleObservation[];
+  purchaseAction?: PurchaseTurnAction;
 }
 
 export interface HabitMemory {
@@ -191,6 +212,7 @@ export type DecisionAction =
   | "clarify"
   | "comparison_only"
   | "recommend"
+  | "price_list"
   | "price_answer"
   | "policy_unknown"
   | "budget_conflict"
@@ -230,6 +252,7 @@ export interface DecisionResult extends DecisionDraft {
   decisionTrace?: DecisionTrace;
   agentTrace?: AgentTrace;
   clarification?: ClarificationProgress;
+  purchaseTask?: PurchaseTask;
 }
 
 export interface ClarificationProgress {
@@ -256,8 +279,8 @@ export interface AgentContext {
   candidateProducts: ReadonlyArray<ProductFit>;
   rawCandidateSkus: ReadonlyArray<string>;
   productFits: ReadonlyArray<ProductFit>;
-  rejectedProducts: ReadonlyArray<{ sku: string; reason: string; stage: "safety" | "eligibility" | "hard_constraint" | "budget" }>;
-  hardConstraints: { safety: "active_risk" | "unclear" | "explicitly_stable" | "not_provided"; budgetFen?: number; fragranceFree: boolean };
+  rejectedProducts: ReadonlyArray<{ sku: string; reason: string; stage: "safety" | "eligibility" | "hard_constraint" | "budget" | "already_displayed" }>;
+  hardConstraints: { safety: "active_risk" | "unclear" | "explicitly_stable" | "not_provided"; budgetStatus: PurchaseTask["budget"]["status"]; budgetFen?: number; fragranceFree: boolean };
   softPreferences: { skinType?: string; fragrance?: string; concern?: string };
   requiredMissingFields: ReadonlyArray<StateField>;
   currentDecision: DecisionDraft | null;
@@ -265,6 +288,7 @@ export interface AgentContext {
   observations: ReadonlyArray<ToolObservation>;
   pendingQuestions: ReadonlyArray<StateField>;
   clarification?: ClarificationProgress;
+  purchaseTask: Readonly<PurchaseTask>;
   allowedActions: ReadonlyArray<PlannerAction["action"]>;
   step: number;
   remainingTimeBudget: number;
@@ -281,6 +305,7 @@ export type FinalDecisionProposal =
   | { kind: "recommend"; skus: string[]; evidenceIds: string[]; relation: "single" | "bundle" | "alternatives" }
   | { kind: "ask"; field: StateField; questionGoal: string; evidenceGap: string }
   | { kind: "comparison_only"; skus: string[]; evidenceIds: string[]; field: StateField }
+  | { kind: "price_list"; skus: string[]; evidenceIds: string[] }
   | { kind: "direct"; source: "rule" | "fallback"; reason: string; action?: "close" | "unavailable" };
 
 export interface FinalAuthorizationResult {

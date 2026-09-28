@@ -78,6 +78,7 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
     const draft: DecisionDraft = { action: "clarify", route: "reasoning", routeReason: "最终裁决选择先补充必要信息", questionFields: [proposal.field], candidateSkus: [], recommendations: [], productFits: [...context.productFits], evidence: [], limitations: safety.status === "unclear" ? ["安全信息未明确前不推荐商品"] : [] };
     return { status: "APPROVED", reason: "REQUIRED_FIELD", decision: draft };
   }
+  if (proposal.kind === "price_list") return { status: "FALLBACK_REQUIRED", reason: "PRICE_LIST_NOT_READY" };
   if (safety.status === "unclear") return { status: "FALLBACK_REQUIRED", reason: "SAFETY_UNCLEAR" };
   if (context.requiredMissingFields.length) return { status: "FALLBACK_REQUIRED", reason: "REQUIRED_FIELD_MISSING" };
   const fits = proposal.skus.map((sku) => context.productFits.find((fit) => fit.sku === sku));
