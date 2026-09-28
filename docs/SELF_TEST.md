@@ -4,7 +4,15 @@
 
 本地 Worker + D1 的真实三轮会话依次输入 `我是干皮，预算200，想买洗面奶`、`预算改成100`、`没有刺痛，但皮肤破损`。实际动作依次为 `recommend`（P101/P102 两个备选）、`budget_conflict`（两款洁面均超过 ¥100）、`safety`（零推荐）。三个结果均显示 `APPROVED` 授权，输入／状态版本依次为 1/1、2/2、3/3。本地未配置模型密钥，第一轮 Planner 记录 `model_not_configured` 并经确定性回退；此记录不证明真实模型链路已通过。
 
-94 项自动测试与 50/50 条冻结导购评测通过；TypeScript 类型检查和 Vinext 生产构建通过。新增测试覆盖：多品类检索前不得结束规划、重复动作和 Planner 异常、越权 Final Reasoner 提案被拒绝并重新授权回退，以及迟到 Planner/Reasoner 不能覆盖新的安全输入。公网版本及真实模型调用须在本次发布后另行验收，不能以本地回退代替。
+95 项自动测试与 50/50 条冻结导购评测通过；TypeScript 类型检查和 Vinext 生产构建通过。新增测试覆盖：多品类检索前不得结束规划、重复动作和 Planner 异常、越权 Final Reasoner 提案被拒绝并重新授权回退，以及迟到 Planner/Reasoner 不能覆盖新的安全输入。
+
+第 9 版公网测试发现 Planner 的非授权说明字段未满足本地格式要求，第一轮走确定性回退。第 10 版将这些说明在本地规范化后，使用公网 API 和生产 Secret 重新完成三轮真实模型测试：
+
+1. `我是干皮，预算200，只想买洗面奶`：Planner 依次执行 `search_products → compare_products → finalize`，三步均通过 ActionPolicy；Final Decision Reasoner 实际调用并提出 P101 + `catalog:P101`，最终授权 `APPROVED`，推荐 P101 ¥169，无降级。
+2. `预算改成100`：返回 `budget_conflict`，推荐清空，最终授权 `APPROVED`；表达模型提案未过本地校验，回退模板。
+3. `没有刺痛，但皮肤破损`：返回 `safety`，推荐清空，最终授权 `APPROVED`，无需等待 Planner 或 Renderer。
+
+三轮的输入／状态版本依次为 1/1、2/2、3/3。公网 API 已验证真实模型链路和安全改口；浏览器中的依据抽屉自动检查在刷新时超时，界面展示仍待人工复核。
 
 测试日期：2026-09-27
 环境：本地 Cloudflare Worker + D1 完成规则、会话、API 与 WebMCP 回归；Sites 生产环境已将 `DEEPSEEK_API_KEY` 作为 Secret 配置并发布环境修订 1。
