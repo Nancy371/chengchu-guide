@@ -16,6 +16,29 @@ function update(field: StateField, value: FactValue, text: string, status: "conf
   return { field, value, quote: text, status, extractedBy: "local" as const };
 }
 
+function chineseBudgetAmount(value: string): number | undefined {
+  const digits: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  const hundreds = value.match(/^([一二两三四五六七八九])百(?:([一二两三四五六七八九])十?([一二两三四五六七八九])?)?$/);
+  if (hundreds) {
+    const hundred = digits[hundreds[1]] * 100;
+    if (!hundreds[2]) return hundred;
+    if (value.includes("十")) return hundred + digits[hundreds[2]] * 10 + (hundreds[3] ? digits[hundreds[3]] : 0);
+    return hundred + digits[hundreds[2]] * 10;
+  }
+  const tens = value.match(/^([一二两三四五六七八九])?十([一二两三四五六七八九])?$/);
+  if (tens) return (tens[1] ? digits[tens[1]] : 1) * 10 + (tens[2] ? digits[tens[2]] : 0);
+  return digits[value];
+}
+
+function pendingBudgetAnswer(text: string): number | undefined {
+  const compact = text.trim().replace(/\s+/g, "").replace(/[，。！？?!,]/g, "");
+  const wrapper = compact.match(/^(?:预算)?(?:大概|大约|差不多|就|控制在)?[¥￥]?(.+?)(?:元|块钱|块)?(?:左右|以内|以下|上下)?(?:吧|就行|可以)?$/);
+  if (!wrapper) return undefined;
+  if (/^[1-9]\d{0,4}$/.test(wrapper[1])) return Number(wrapper[1]) * 100;
+  const chinese = chineseBudgetAmount(wrapper[1]);
+  return chinese === undefined ? undefined : chinese * 100;
+}
+
 const symptomFields = ["stinging", "pain", "skinDamage", "otherDiscomfort"] as const;
 type SymptomField = typeof symptomFields[number];
 
@@ -200,6 +223,10 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if (/不想重复买|避免重复买|已有.*不再买|只想买单品|以后.*单品/.test(compact)) lifestyle.push({ kind: "purchase_preference", value: /单品/.test(compact) ? "single_item" : "avoid_duplicate", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
 
   const delta = deterministicExtract(text);
+  if (pendingQuestion === "budget" && !delta.updates.some((item) => item.field === "budget")) {
+    const budget = pendingBudgetAnswer(raw);
+    if (budget !== undefined) delta.updates.push(update("budget", budget, raw));
+  }
   if (pendingQuestion === "skinType" && !delta.updates.some((item) => item.field === "skinType")) {
     const answer = compact.replace(/[，。！？?!,.]/g, "");
     if (/^(?:我)?(?:是|偏|比较)?干(?:的|皮)?$/.test(answer)) delta.updates.push(update("skinType", "dry", raw));

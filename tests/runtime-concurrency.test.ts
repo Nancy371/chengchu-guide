@@ -304,6 +304,20 @@ test("a purchase advances from budget to preference instead of stopping after an
   assert.equal(preference.state.facts.fragranceNote?.value, "玫瑰香");
 });
 
+test("a bare number answers the pending budget question without losing the known category", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "bare-budget1", "想买支洗面奶")).result;
+  assert.deepEqual(first.questionFields, ["budget"]);
+  assert.doesNotMatch(first.reply, /还没说.*哪类/);
+
+  const answered = (await agent.handleTurn("s", "bare-budget2", "200")).result;
+  assert.notDeepEqual(answered.questionFields, ["budget"]);
+  assert.equal(answered.state.facts.budget?.value, 20_000);
+  assert.equal(answered.purchaseTask?.budget.status, "limited");
+  assert.equal(answered.purchaseTask?.budget.fen, 20_000);
+});
+
 test("declining budget lists related prices without inventing a main recommendation", async () => {
   const repo = new MemoryRepository();
   const agent = runtime(repo);

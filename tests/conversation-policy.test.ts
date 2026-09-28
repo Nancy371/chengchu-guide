@@ -117,6 +117,18 @@ test("the renderer cannot inject SKU, prices, promises or extra questions", () =
   }, plan), null);
 });
 
+test("the renderer cannot deny an already-known purchase category", () => {
+  const state = stateFrom("想买洗面奶");
+  const plan = planConversation({ draft: decide(state), state, signals: [], lifestyle: [], memories: [], updatedFields: ["categories"] });
+  const questions = plan.policy.selectedQuestionFields.map((field) => ({ field, text: field === "budget" ? "这次预算大概想控制在多少？" : "这一点你更倾向哪一边？" }));
+  assert.equal(validateRenderProposal({
+    acknowledgement: "你还没说具体想看哪类，我先帮你圈个范围。",
+    blockIds: plan.factBlocks.map((item) => item.id),
+    questions,
+    closing: "",
+  }, plan), null);
+});
+
 test("the renderer rejects unsupported gifts, returns, effects and contact questions", () => {
   const state = stateFrom("想买洗面奶");
   const plan = planConversation({ draft: decide(state), state, signals: [], lifestyle: [], memories: [], updatedFields: ["categories"] });

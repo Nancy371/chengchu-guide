@@ -100,6 +100,16 @@ test("short skin answers only apply in response to a skin question", async () =>
   assert.equal(fact(dry.state, "currentDiscomfort"), undefined);
 });
 
+test("short amount answers only become budgets while a budget question is pending", async () => {
+  for (const [message, expected] of [["200", 20_000], ["200块左右", 20_000], ["大概两百", 20_000], ["一百五", 15_000]] as const) {
+    const answered = await verifiedState.update({ currentState: empty(), userMessage: message, pendingQuestion: "budget" });
+    assert.equal(fact(answered.state, "budget"), expected, message);
+    assert.equal(answered.state.facts.budget?.quote, message);
+  }
+  const unrelated = await verifiedState.update({ currentState: empty(), userMessage: "200" });
+  assert.equal(fact(unrelated.state, "budget"), undefined);
+});
+
 test("a vague answer to the pending sensitivity question remains unconfirmed", async () => {
   const initial = (await verifiedState.update({ currentState: empty(), userMessage: "想买果酸，用过果酸，现在状态稳定" })).state;
   const vague = await verifiedState.update({ currentState: initial, userMessage: "还可以", pendingQuestion: "sensitiveTendency", extract: async () => ({ audit, proposal: { updates: [{ field: "sensitiveTendency", value: false, quote: "还可以", status: "confirmed" }], signals: [{ kind: "communication", value: "answer_ambiguous", quote: "还可以", explicit: true, subject: "self", temporal: "current" }], lifestyle: [] } }) });

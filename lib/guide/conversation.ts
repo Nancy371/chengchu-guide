@@ -286,6 +286,19 @@ function emojiCount(text: string) {
   return (text.match(/[\p{Extended_Pictographic}]/gu) ?? []).length;
 }
 
+function claimsUnselectedGap(text: string, selectedFields: StateField[]) {
+  const missingClaim = /(?:还没|没有|没|尚未|未)(?:说|提|提到|明确|确定|说明|告诉)/;
+  if (!missingClaim.test(text)) return false;
+  const selected = new Set(selectedFields);
+  if (/(?:哪类|品类|类别|产品类型|想买什么)/.test(text) && !selected.has("categories")) return true;
+  if (/预算|价位|花多少/.test(text) && !selected.has("budget")) return true;
+  if (/肤质|偏干|偏油/.test(text) && !selected.has("skinType")) return true;
+  if (/香味|无香/.test(text) && !selected.has("fragrancePreference")) return true;
+  if (/质地|肤感/.test(text) && !selected.has("texturePreference")) return true;
+  if (/不适|刺痛|破损|疼痛/.test(text) && !selected.has("currentDiscomfort")) return true;
+  return false;
+}
+
 export function validateRenderProposal(value: unknown, plan: ConversationPlan): RenderedCopy | null {
   if (!value || typeof value !== "object") return null;
   const proposal = value as RenderProposal;
@@ -295,6 +308,7 @@ export function validateRenderProposal(value: unknown, plan: ConversationPlan): 
   const closing = typeof proposal.closing === "string" ? proposal.closing.trim() : "";
   if (plan.policy.shouldAcknowledge && !acknowledgement) return null;
   if (acknowledgement.length > 70 || closing.length > 70 || prohibitedFreeText(`${acknowledgement}${closing}`) || /[？?]/.test(`${acknowledgement}${closing}`)) return null;
+  if (claimsUnselectedGap(`${acknowledgement}${closing}`, plan.policy.selectedQuestionFields)) return null;
   if (plan.policy.nextAction === "comparison_only" && /推荐|主推|首选|适合|先选|先看|值得买|入手/.test(`${acknowledgement}${closing}`)) return null;
   const questions = Array.isArray(proposal.questions) ? proposal.questions : [];
   if (questions.length !== plan.policy.selectedQuestionFields.length) return null;
