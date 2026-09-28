@@ -205,3 +205,87 @@ test("late planner and final reasoner results cannot overwrite a newer safety tu
     assert.equal(repo.session.state.facts.pain?.value, true);
   }
 });
+
+test("four unclear low-risk answers end in a price-correct comparison without a main recommendation", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "c1", "想买洗面奶")).result;
+  assert.deepEqual(first.questionFields, ["skinType"]);
+  assert.equal(first.clarification?.askedCount, 1);
+  for (let count = 2; count <= 4; count++) {
+    const turn = (await agent.handleTurn("s", `c${count}`, "还可以")).result;
+    assert.deepEqual(turn.questionFields, ["skinType"]);
+    assert.equal(turn.clarification?.askedCount, count);
+    assert.equal(turn.questions.length, 1);
+  }
+  const compared = (await agent.handleTurn("s", "c5", "还可以")).result;
+  assert.equal(compared.action, "comparison_only");
+  assert.deepEqual(compared.recommendations, []);
+  assert.deepEqual(compared.questions, []);
+  assert.match(compared.reply, /¥169/);
+  assert.match(compared.reply, /¥149/);
+  assert.equal(compared.totalFen, undefined);
+  assert.equal(compared.agentTrace?.authorizationReason, "FACTUAL_COMPARISON_ONLY");
+});
+
+test("a price interruption retains the unresolved field without counting as an answer", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "p1", "想买洗面奶")).result;
+  assert.equal(first.clarification?.askedCount, 1);
+  const price = (await agent.handleTurn("s", "p2", "P101 多少钱")).result;
+  assert.equal(price.action, "price_answer");
+  assert.equal(price.clarification?.askedCount, 1);
+  const resumed = (await agent.handleTurn("s", "p3", "还可以")).result;
+  assert.deepEqual(resumed.questionFields, ["skinType"]);
+  assert.equal(resumed.clarification?.askedCount, 2);
+});
+
+test("one budget-qualified item or delegated choice can be recommended without guessed skin type", async () => {
+  for (const [text, expectedSku] of [["预算150，想买洗面奶", "P102"], ["想买洗面奶，你帮我定一款", "P101"]]) {
+    const repo = new MemoryRepository();
+    const result = (await runtime(repo).handleTurn("s", "single", text)).result;
+    assert.equal(result.action, "recommend", text);
+    assert.equal(result.recommendations.length, 1);
+    assert.equal(result.recommendations[0].sku, expectedSku);
+    assert.equal(result.state.facts.skinType, undefined);
+    assert.equal(result.reply.includes("偏干肤质与手册适用提示一致"), false);
+  }
+});
+
+test("unclear current discomfort keeps asking without making a comparison", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  for (let turn = 1; turn <= 5; turn++) {
+    const result = (await agent.handleTurn("s", `safe${turn}`, turn === 1 ? "皮肤有点不舒服，想买洗面奶" : "还可以")).result;
+    assert.equal(result.action, "clarify");
+    assert.deepEqual(result.questionFields, ["currentDiscomfort"]);
+    assert.equal(result.recommendations.length, 0);
+  }
+});
+
+test("declining an optional answer stops questions and only compares checked peers", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "decline1", "想买洗面奶")).result;
+  assert.deepEqual(first.questionFields, ["skinType"]);
+  const declined = (await agent.handleTurn("s", "decline2", "不想回答这个")).result;
+  assert.equal(declined.action, "comparison_only");
+  assert.deepEqual(declined.questionFields, []);
+  assert.deepEqual(declined.recommendations, []);
+  assert.equal(declined.agentTrace?.authorizationReason, "FACTUAL_COMPARISON_ONLY");
+});
+
+test("declining an unresolved safety question does not recommend or ask again this turn", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "safety1", "皮肤有点不舒服，想买洗面奶")).result;
+  assert.deepEqual(first.questionFields, ["currentDiscomfort"]);
+  const declined = (await agent.handleTurn("s", "safety2", "不方便说")).result;
+  assert.equal(declined.action, "unavailable");
+  assert.deepEqual(declined.questionFields, []);
+  assert.deepEqual(declined.recommendations, []);
+  assert.match(declined.reply, /不能安全推荐/);
+  const retry = (await agent.handleTurn("s", "safety3", "还是想买洗面奶")).result;
+  assert.deepEqual(retry.questionFields, ["currentDiscomfort"]);
+});

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildAgentContext } from "../lib/guide/agent-context";
+import { clarificationGoalKey } from "../lib/guide/clarification";
 import { authorizePlannerAction, runPlannerLoop } from "../lib/guide/planner";
 import { applyDelta, deterministicExtract } from "../lib/guide/state";
 import type { ModelAudit, PlannerAction, SessionRecord, UserState } from "../lib/guide/types";
@@ -70,4 +71,30 @@ test("planner exception is recorded and does not escape the loop", async () => {
   const result = await runPlannerLoop(context("想买洗面奶"), { async plan() { throw new Error("network"); } }, Date.now() + 40_000);
   assert.equal(result.fallbackReason, "PLANNER_EXCEPTION");
   assert.equal(result.trace[0]?.policy, "rejected");
+});
+
+test("planner asks one required field and cannot finalize before it is known", async () => {
+  const choices = [action("search_products", { category: "cleanser" }), action("finalize", {}), action("ask_user", { field: "skinType" })];
+  const result = await runPlannerLoop(context("想买洗面奶"), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
+  assert.equal(result.trace[1]?.reason, "REQUIRED_FIELD_MISSING");
+  assert.equal(result.questionField, "skinType");
+  assert.deepEqual(result.context.requiredMissingFields, ["skinType"]);
+});
+
+test("one qualified item or explicit delegated choice does not require a ranking preference", async () => {
+  for (const message of ["预算150，想买洗面奶", "想买洗面奶，你帮我定一款"]) {
+    const choices = [action("search_products", { category: "cleanser" }), action("finalize", {})];
+    const result = await runPlannerLoop(context(message), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
+    assert.equal(result.fallbackReason, undefined, message);
+    assert.deepEqual(result.context.requiredMissingFields, [], message);
+  }
+});
+
+test("four unresolved low-risk questions end in a factual comparison without finalize", async () => {
+  const initial = context("想买洗面奶");
+  const prior = { ...initial, clarification: { goalKey: clarificationGoalKey(initial.userState as UserState), candidateKey: "P101+P102", field: "skinType" as const, askedCount: 4, reason: "肤质会改变排序" } };
+  const result = await runPlannerLoop(prior, { async plan() { return { proposal: action("search_products", { category: "cleanser" }), audit }; } }, Date.now() + 40_000);
+  assert.equal(result.comparisonField, "skinType");
+  assert.equal(result.questionField, undefined);
+  assert.deepEqual(result.context.requiredMissingFields, ["skinType"]);
 });

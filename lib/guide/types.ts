@@ -53,7 +53,7 @@ export interface UserState {
 export type SignalKind = "emotion" | "communication" | "lifestyle";
 export type SignalValue =
   | "worried" | "frustrated" | "hesitant" | "happy"
-  | "price_objection" | "reject" | "correction" | "hurry" | "direct_answer" | "answer_ambiguous"
+  | "price_objection" | "reject" | "correction" | "hurry" | "direct_answer" | "answer_ambiguous" | "decline_answer"
   | "morning_rush" | "exercise" | "travel" | "simple_routine" | "existing_routine" | "sensory_discomfort";
 
 export interface TurnSignal {
@@ -189,6 +189,7 @@ export interface ModelAudit {
 
 export type DecisionAction =
   | "clarify"
+  | "comparison_only"
   | "recommend"
   | "price_answer"
   | "policy_unknown"
@@ -228,6 +229,15 @@ export interface DecisionResult extends DecisionDraft {
   };
   decisionTrace?: DecisionTrace;
   agentTrace?: AgentTrace;
+  clarification?: ClarificationProgress;
+}
+
+export interface ClarificationProgress {
+  goalKey: string;
+  candidateKey: string;
+  field: StateField;
+  askedCount: number;
+  reason: string;
 }
 
 export type DecisionToolName = "search_products" | "get_product_detail" | "check_safety" | "check_eligibility" | "check_budget" | "compare_products" | "lookup_policy";
@@ -254,6 +264,7 @@ export interface AgentContext {
   completedActions: ReadonlyArray<DecisionToolName>;
   observations: ReadonlyArray<ToolObservation>;
   pendingQuestions: ReadonlyArray<StateField>;
+  clarification?: ClarificationProgress;
   allowedActions: ReadonlyArray<PlannerAction["action"]>;
   step: number;
   remainingTimeBudget: number;
@@ -263,12 +274,14 @@ export interface AgentContext {
 export type PlannerAction =
   | { action: "search_products"; arguments: { category: Product["category"] }; evidenceNeeded: string; expectedProgress: string }
   | { action: "compare_products"; arguments: { skus: string[] }; evidenceNeeded: string; expectedProgress: string }
+  | { action: "ask_user"; arguments: { field: StateField }; evidenceNeeded: string; expectedProgress: string }
   | { action: "finalize"; arguments: Record<string, never>; evidenceNeeded: string; expectedProgress: string };
 
 export type FinalDecisionProposal =
   | { kind: "recommend"; skus: string[]; evidenceIds: string[]; relation: "single" | "bundle" | "alternatives" }
   | { kind: "ask"; field: StateField; questionGoal: string; evidenceGap: string }
-  | { kind: "direct"; source: "rule" | "fallback"; reason: string; action?: "close" };
+  | { kind: "comparison_only"; skus: string[]; evidenceIds: string[]; field: StateField }
+  | { kind: "direct"; source: "rule" | "fallback"; reason: string; action?: "close" | "unavailable" };
 
 export interface FinalAuthorizationResult {
   status: "APPROVED" | "REJECTED" | "STALE" | "FALLBACK_REQUIRED";

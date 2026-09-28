@@ -24,6 +24,14 @@ test("safety distinguishes active, unclear, stable and absent evidence", () => {
   assert.equal(absent.blocksAcid, true);
 });
 
+test("sensitive tendency does not become an unsupported claim of current stability", () => {
+  const state = stateFrom("我是敏感肌，想买洗面奶");
+  const fit = checkEligibility({ skus: ["P101"], userState: state }).fits[0];
+  assert.equal(fit.status, "needs_information");
+  assert.equal(fit.missing.includes("currentDiscomfort"), true);
+  assert.equal(fit.matches.some((item) => item.includes("当前稳定")), false);
+});
+
 test("eligibility respects damage, acid experience and hard fragrance preference", () => {
   const damaged = checkEligibility({ skus: ["P201"], userState: stateFrom("我想买果酸，皮肤破损，用过果酸，不敏感") });
   assert.equal(damaged.rejected[0]?.sku, "P201");

@@ -43,22 +43,20 @@ const questionCopy: Partial<Record<StateField, string>> = {
   budget: "如果要搭配着买，你希望总价大概控制在多少？我会按这个范围做取舍。",
   fragrancePreference: "香味这件事你在意吗？是可以接受，还是更想要无香的？",
   currentDiscomfort: "我先确认一下安全问题：现在还有刺痛、疼痛或破损吗？",
-  sensitiveTendency: "你的皮肤平时容易敏感吗？现在如果有破损或不舒服，也一起告诉我。",
+  sensitiveTendency: "你的皮肤平时容易敏感吗？",
   acidExperience: "之前用过果酸或类似的焕肤产品吗？这个会影响我能不能继续推荐。",
   coreConcern: "真要做取舍时，你最想保住哪一点：清爽肤感、无香，还是价格？",
 };
 
-function questionFor(field: StateField, state: UserState, clarifyAmbiguity = false) {
-  if (clarifyAmbiguity) {
-    const concrete: Partial<Record<StateField, string>> = {
-      sensitiveTendency: "我换个具体的问法：平时用新护肤品基本没反应，还是偶尔会泛红、刺痛？",
-      currentDiscomfort: "我先确认现在的情况：有没有刺痛、疼痛或破损？",
-      skinType: "我换个更好判断的问法：洗完脸更容易紧绷，还是过一会儿容易出油？",
-      fragrancePreference: "带一点香味你能接受吗，还是希望完全无香？",
-      acidExperience: "之前实际用过果酸或类似焕肤产品吗？",
-    };
-    if (concrete[field]) return concrete[field];
-  }
+function questionFor(field: StateField, state: UserState, attempt = 1) {
+  const followups: Partial<Record<StateField, string[]>> = {
+    sensitiveTendency: ["我换个具体的问法：平时用新护肤品基本没反应，还是偶尔会泛红、刺痛？", "如果只说多数时候，皮肤算容易敏感吗？", "你平时会把自己归为敏感皮肤吗？"],
+    currentDiscomfort: ["我先确认现在的情况：有没有刺痛、疼痛或破损？", "这些不舒服是现在还有，还是已经好了？", "目前皮肤有破损或明显疼痛吗？"],
+    skinType: ["洗完脸更容易紧绷，还是过一会儿容易出油？", "如果只看平时多数时候，脸更偏干还是偏油？", "不用精确判断肤质，日常更常觉得干，还是更常出油？"],
+    fragrancePreference: ["带一点香味你能接受吗，还是希望完全无香？", "如果只在带香和无香之间选，你会偏向哪边？", "香味对你是一个限制，还是没有特别要求？"],
+    acidExperience: ["之前实际用过果酸或类似焕肤产品吗？", "这类果酸产品你以前亲自用过吗？", "是第一次考虑果酸，还是已经有使用经验？"],
+  };
+  if (attempt > 1 && followups[field]?.length) return followups[field]![(attempt - 2) % followups[field]!.length];
   if (field !== "skinType") return questionCopy[field] ?? "还差一条会影响选择的信息，你愿意时再告诉我就好。";
   const categories = fact<string[]>(state, "categories") ?? [];
   if (categories.includes("moisturizer")) return "平时皮肤更容易干，还是容易出油？这会影响我在滋润和清爽之间怎么选。";
@@ -77,6 +75,10 @@ export const conversationLanguageRules = [
 
 export function formatMoney(fen: number) {
   return `¥${(fen / 100).toFixed(fen % 100 ? 2 : 0)}`;
+}
+
+function productLabel(sku: string, name: string) {
+  return name.startsWith(`${sku} `) ? name : `${sku} ${name}`;
 }
 
 function hasSignal(signals: TurnSignal[], value: TurnSignal["value"]) {
@@ -114,7 +116,7 @@ function taskSkill(draft: DecisionDraft, signals: TurnSignal[], state: UserState
   if (hasSignal(signals, "price_objection") || (fact<string[]>(state, "policyTopics") ?? []).includes("online_price")) return "price_objection";
   if (draft.action === "budget_conflict") return "budget_conflict";
   if (hasSignal(signals, "correction")) return "conversation_repair";
-  if (hasSignal(signals, "hesitant") || draft.recommendations.length > 1 || draft.action === "unavailable" || draft.action === "close") return "decision_support";
+  if (hasSignal(signals, "hesitant") || draft.recommendations.length > 1 || draft.action === "comparison_only" || draft.action === "unavailable" || draft.action === "close") return "decision_support";
   if (draft.action === "clarify") return "clarification";
   return "recommendation";
 }
@@ -153,7 +155,7 @@ function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
   if (draft.action === "price_answer") {
     const item = draft.recommendations[0];
     if (!item) return [];
-    return [{ id: `price:${item.sku}`, text: `${item.sku}（${item.name} · ${PRODUCTS_BY_SKU[item.sku].size}）手册标价是 ${formatMoney(item.priceFen)}。${item.sku === "P102" ? "源文件中的完整名称有缺字，所以没有自行补全。" : ""}` }];
+    return [{ id: `price:${item.sku}`, text: `${productLabel(item.sku, item.name)}（${PRODUCTS_BY_SKU[item.sku].size}）手册标价是 ${formatMoney(item.priceFen)}。${item.sku === "P102" ? "源文件中的完整名称有缺字，所以没有自行补全。" : ""}` }];
   }
   if (draft.action === "budget_conflict") {
     const budget = fact<number>(state, "budget") ?? 0;
@@ -163,19 +165,34 @@ function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
     }
     return [{ id: "budget-bundle", text: `这套搭配合计 ${formatMoney(draft.totalFen ?? 0)}，比你的 ${formatMoney(budget)} 预算高 ${formatMoney(draft.budgetGapFen ?? 0)}，所以不能把它算成预算内方案。` }];
   }
-  if (draft.action === "unavailable") return [{ id: "unavailable", text: `照你现在说的情况，现有商品里还没有适合直接推荐的。${draft.limitations.length ? `卡在这里：${draft.limitations.join("；")}。` : ""}` }];
+  if (draft.action === "unavailable") return [{ id: "unavailable", text: draft.routeReason.includes("不愿回答") ? `可以先不回答。${draft.limitations.join("；")}。` : `照你现在说的情况，现有商品里还没有适合直接推荐的。${draft.limitations.length ? `卡在这里：${draft.limitations.join("；")}。` : ""}` }];
+  if (draft.action === "comparison_only") return [
+    { id: "comparison-intro", text: "这点偏好还没弄清，我先只把手册里的差别摆出来，不替你定主推。" },
+    ...draft.candidateSkus.flatMap((sku) => {
+      const product = PRODUCTS_BY_SKU[sku];
+      return product ? [{ id: `comparison:${sku}`, text: `${productLabel(sku, product.name)}（${product.size}）标价 ${formatMoney(product.priceFen)}：${product.features.join("、")}。` }] : [];
+    }),
+  ];
   if (draft.action === "recommend") {
     if (draft.pricingMode === "alternatives") {
-      return [{ id: "recommend-alternatives", text: `现在可以从 ${draft.recommendations.map((item) => `${item.sku} ${item.name}（${formatMoney(item.priceFen)}）`).join("和")} 里选一个。它们是两个备选，不用一起买。` }];
+      return draft.recommendations.map((item, index) => {
+        const product = PRODUCTS_BY_SKU[item.sku];
+        const reason = item.reasons[0] ?? product.features.slice(0, 2).join("、");
+        const tradeoff = item.tradeoffs.find((part) => !part.includes("完整名称待核"));
+        return { id: `recommend:${item.sku}`, text: `${index === 0 ? "我会先看" : "另一个选择是"}${productLabel(item.sku, item.name)}（${formatMoney(item.priceFen)}）：${reason}。${tradeoff ? `要留意${tradeoff}。` : ""}` };
+      });
     }
-    const names = draft.recommendations.map((item) => `${item.sku} ${item.name}`).join("＋");
+    if (draft.pricingMode === "bundle" && draft.recommendations.length === 2) return [
+      ...draft.recommendations.map((item) => ({ id: `bundle:${item.sku}`, text: `${productLabel(item.sku, item.name)}（${formatMoney(item.priceFen)}）：${item.reasons[0] ?? PRODUCTS_BY_SKU[item.sku].features[0]}。` })),
+      { id: "bundle-total", text: `两件合计 ${formatMoney(draft.totalFen ?? 0)}，可以按你实际需要决定是否一起买。` },
+    ];
+    const names = draft.recommendations.map((item) => productLabel(item.sku, item.name)).join("＋");
     const amount = draft.totalFen ? `，合计 ${formatMoney(draft.totalFen)}` : "";
     const reason = draft.recommendations.flatMap((item) => item.reasons).slice(0, 2).join("；");
     const tradeoff = draft.recommendations.flatMap((item) => item.tradeoffs).slice(0, 2).join("；");
     return [
-      { id: "recommendation", text: `按你现在说的情况，我会先看 ${names}${amount}。${reason ? `主要因为：${reason}。` : ""}` },
-      ...(tradeoff ? [{ id: "tradeoff", text: `不过有一点要留意：${tradeoff}。` }] : []),
-      { id: "no-pressure", text: "按你真正需要的买就好，不用为了凑一套多加东西。" },
+      { id: "recommendation", text: `我会先看 ${names}${amount}。${reason || (draft.recommendations[0] ? PRODUCTS_BY_SKU[draft.recommendations[0].sku].features[0] : "")}。` },
+      ...(tradeoff ? [{ id: "tradeoff", text: `要留意：${tradeoff}。` }] : []),
     ];
   }
   return [];
@@ -205,17 +222,14 @@ export function planConversation(input: {
   memories: HabitMemory[];
   previousResult?: DecisionResult | null;
   updatedFields: StateField[];
+  questionAttempt?: number;
 }): ConversationPlan {
-  const { draft, state, signals, lifestyle, memories, previousResult, updatedFields } = input;
+  const { draft, state, signals, lifestyle, memories, previousResult, updatedFields, questionAttempt } = input;
   const memory = relevantMemory(state, memories, draft);
   const rejected = hasSignal(signals, "reject");
   const effectiveDraft: DecisionDraft = rejected && draft.action !== "safety" ? { ...draft, action: "close", recommendations: [], candidateSkus: [], totalFen: undefined, budgetGapFen: undefined, routeReason: "用户明确表示停止推荐或暂不购买" } : draft;
-  const repeated = new Set(previousResult?.questionFields ?? []);
-  const ambiguousAnswer = signals.some((item) => item.value === "answer_ambiguous" && item.subject === "self" && item.temporal !== "historical");
-  const decisionContextChanged = (["categories", "targetSku"] as const).some((field) =>
-    updatedFields.includes(field) && JSON.stringify(previousResult?.state?.facts?.[field]?.value) !== JSON.stringify(state.facts[field]?.value));
   const selectedQuestionFields = effectiveDraft.action === "clarify"
-    ? effectiveDraft.questionFields.filter((field) => !repeated.has(field) || updatedFields.includes(field) || decisionContextChanged || ambiguousAnswer).slice(0, 1)
+    ? effectiveDraft.questionFields.slice(0, 1)
     : [];
   const emotion = acknowledgedEmotion(signals, effectiveDraft);
   const behaviorSkills = selectBehaviorSkills(signals, lifestyle, memory, effectiveDraft.action);
@@ -251,11 +265,8 @@ export function planConversation(input: {
     policy,
     factBlocks: [
       ...factsFor(effectiveDraft, state),
-      ...(effectiveDraft.action === "clarify" && effectiveDraft.questionFields.includes("skinType") && !selectedQuestionFields.length
-        ? [{ id: "skin-type-unconfirmed", text: "我还不能从这句话确认你偏干还是偏油，所以暂时不能按肤质选。你想清楚后直接告诉我就好。" }]
-        : []),
     ],
-    questionGoals: selectedQuestionFields.map((field) => ({ field, fallback: questionFor(field, state, ambiguousAnswer && repeated.has(field)) })),
+    questionGoals: selectedQuestionFields.map((field) => ({ field, fallback: questionFor(field, state, questionAttempt ?? (previousResult?.questionFields.includes(field) ? 2 : 1)) })),
   };
 }
 
@@ -271,11 +282,12 @@ export function validateRenderProposal(value: unknown, plan: ConversationPlan): 
   if (!value || typeof value !== "object") return null;
   const proposal = value as RenderProposal;
   const requiredIds = plan.factBlocks.map((block) => block.id);
-  if (!Array.isArray(proposal.blockIds) || proposal.blockIds.length !== requiredIds.length || new Set(proposal.blockIds).size !== requiredIds.length || proposal.blockIds.some((id) => !requiredIds.includes(id))) return null;
+  if (!Array.isArray(proposal.blockIds) || proposal.blockIds.length !== requiredIds.length || proposal.blockIds.some((id, index) => id !== requiredIds[index])) return null;
   const acknowledgement = typeof proposal.acknowledgement === "string" ? proposal.acknowledgement.trim() : "";
   const closing = typeof proposal.closing === "string" ? proposal.closing.trim() : "";
   if (plan.policy.shouldAcknowledge && !acknowledgement) return null;
   if (acknowledgement.length > 70 || closing.length > 70 || prohibitedFreeText(`${acknowledgement}${closing}`) || /[？?]/.test(`${acknowledgement}${closing}`)) return null;
+  if (plan.policy.nextAction === "comparison_only" && /推荐|主推|首选|适合|先选|先看|值得买|入手/.test(`${acknowledgement}${closing}`)) return null;
   const questions = Array.isArray(proposal.questions) ? proposal.questions : [];
   if (questions.length !== plan.policy.selectedQuestionFields.length) return null;
   for (const question of questions) {

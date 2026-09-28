@@ -91,7 +91,8 @@ export function compileProductFits(state: UserState, memories: HabitMemory[] = [
 
     if (product.sku === "P101") {
       if (skin === "dry") { matches.push("偏干肤质与手册适用提示一致"); score += 30; }
-      if (sensitive === true) { matches.push("敏感倾向且当前稳定时可考虑"); score += 20; }
+      if (sensitive === true && safety.status === "explicitly_stable") { matches.push("敏感倾向且当前稳定时可考虑"); score += 20; }
+      if (sensitive === true && safety.status === "not_provided") missing.push("currentDiscomfort");
       if (fragrance === "must_be_fragrance_free" || fragrance === "fragrance_sensitive") { matches.push("无香型符合香味偏好"); score += 18; }
     }
     if (product.sku === "P102") {
@@ -114,7 +115,8 @@ export function compileProductFits(state: UserState, memories: HabitMemory[] = [
     }
     if (product.sku === "P202") {
       if (skin === "dry") { matches.push("偏干与保湿提示一致"); score += 28; }
-      if (sensitive === true) { matches.push("屏障脆弱倾向且当前稳定时可考虑"); score += 18; }
+      if (sensitive === true && safety.status === "explicitly_stable") { matches.push("屏障脆弱倾向且当前稳定时可考虑"); score += 18; }
+      if (sensitive === true && safety.status === "not_provided") missing.push("currentDiscomfort");
       if (fragrance === "must_be_fragrance_free" || fragrance === "fragrance_sensitive") { matches.push("无香型符合香味偏好"); score += 15; }
       tradeoffs.push("不作治疗承诺");
     }

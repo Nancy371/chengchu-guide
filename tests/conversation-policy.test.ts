@@ -92,6 +92,19 @@ test("two recommendations are alternatives rather than a bundle total", () => {
   }
 });
 
+test("two-product copy explains each option once and comparison cannot smuggle in a main pick", () => {
+  const state = stateFrom("我是干皮，想买洗面奶");
+  const recommended = planConversation({ draft: decide(state), state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
+  const recommendedText = recommended.factBlocks.map((block) => block.text).join(" ");
+  assert.equal((recommendedText.match(/P101/g) ?? []).length, 1);
+  assert.equal((recommendedText.match(/P102/g) ?? []).length, 1);
+  assert.match(recommendedText, /¥169/);
+  assert.match(recommendedText, /¥149/);
+  assert.equal(recommendedText.includes("两个备选"), false);
+  const compared = planConversation({ draft: { ...decide(state), action: "comparison_only", recommendations: [], candidateSkus: ["P101", "P102"], questionFields: [], totalFen: undefined }, state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
+  assert.equal(validateRenderProposal({ acknowledgement: "", blockIds: compared.factBlocks.map((block) => block.id), questions: [], closing: "我主推第一款。" }, compared), null);
+});
+
 test("the renderer cannot inject SKU, prices, promises or extra questions", () => {
   const state = stateFrom("想买洗面奶");
   const draft = decide(state);
@@ -127,12 +140,12 @@ test("the renderer rejects robotic phrasing and stacked questions", () => {
   }, plan), null);
 });
 
-test("a previously asked optional field is not immediately repeated", () => {
+test("a still-needed field remains askable after an unclear reply", () => {
   const state = stateFrom("偏油，想买洗面奶");
   const draft = decide(state);
   const previousResult = { questionFields: ["fragrancePreference"] } as DecisionResult;
   const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], previousResult, updatedFields: [] });
-  assert.deepEqual(plan.policy.selectedQuestionFields, []);
+  assert.deepEqual(plan.policy.selectedQuestionFields, ["fragrancePreference"]);
 });
 
 test("a vague answer retries a needed sensitivity question in concrete words", () => {

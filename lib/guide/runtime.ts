@@ -2,15 +2,34 @@ import { planConversation, renderTemplate } from "./conversation";
 import { buildAgentContext, decisionTrace, withDecision } from "./agent-context";
 import { decide, KNOWLEDGE_VERSION } from "./decision";
 import { authorizeFinalDecision, parseFinalProposal, safetyDecision } from "./final-decision";
-import { runPlannerLoop } from "./planner";
+import { prepareDeterministicCandidates, runPlannerLoop } from "./planner";
+import { clarificationGoalKey, comparableFits, exhaustedLowRiskQuestion, matchingProgress, nextClarificationProgress } from "./clarification";
 import { DeepSeekModelAdapter } from "./model";
 import { D1GuideRepository } from "./repository";
 import { composeResult } from "./response";
-import { deterministicUnderstand } from "./state";
+import { deterministicExtract, deterministicUnderstand, fact } from "./state";
 import { verifiedState } from "./verified-state";
 import type { AgentTrace, DecisionResult, FinalDecisionProposal, ModelAudit, SessionRecord, TurnUnderstanding } from "./types";
 
 const PREDECESSOR_TIMEOUT_MS = 12_000;
+
+function comparisonProposal(context: ReturnType<typeof buildAgentContext>, field: NonNullable<ReturnType<typeof exhaustedLowRiskQuestion>>): FinalDecisionProposal {
+  const fits = comparableFits(context);
+  return { kind: "comparison_only", field, skus: fits.map((fit) => fit.sku), evidenceIds: fits.flatMap((fit) => fit.evidence.map((item) => item.id)) };
+}
+
+function deterministicProposal(context: ReturnType<typeof buildAgentContext>, reason: string): FinalDecisionProposal {
+  const unresolved = context.requiredMissingFields[0];
+  const exhausted = exhaustedLowRiskQuestion(context);
+  if (exhausted && comparableFits(context).length === 2) return comparisonProposal(context, exhausted);
+  if (exhausted) return { kind: "direct", source: "fallback", reason: "LOW_RISK_UNRESOLVED", action: "unavailable" };
+  if (unresolved) return { kind: "ask", field: unresolved, questionGoal: "确认会改变当前选择的必要信息", evidenceGap: "当前回答尚不能确定该字段" };
+  const eligible = context.productFits.filter((fit) => fit.status === "eligible").sort((a, b) => b.score - a.score);
+  if (context.goal.categories.length <= 1 && eligible.length && (eligible.length === 1 || fact<boolean>(context.userState as SessionRecord["state"], "delegateChoice") === true)) {
+    return { kind: "recommend", skus: [eligible[0].sku], evidenceIds: eligible[0].evidence.map((item) => item.id), relation: "single" };
+  }
+  return { kind: "direct", source: "fallback", reason };
+}
 
 function staleResult(session: SessionRecord): DecisionResult {
   const result = composeResult({
@@ -53,7 +72,7 @@ export class ConversationRuntime {
     }
 
     const audits: ModelAudit[] = [];
-    let understanding: TurnUnderstanding = deterministicUnderstand(text, begin.previousResult?.questionFields[0]);
+    let understanding: TurnUnderstanding = deterministicUnderstand(text, begin.previousResult?.clarification?.field ?? begin.previousResult?.questionFields[0]);
     let checkpoint: SessionRecord | null = null;
     try {
       const predecessor = await this.awaitPredecessors(sessionId, begin.inputVersion, userId);
@@ -65,7 +84,11 @@ export class ConversationRuntime {
         return { result: stale, duplicate: false, stale: true };
       }
       const startedAt = Date.now();
-      const verified = await verifiedState.update({ currentState: predecessor.state, userMessage: text, pendingQuestion: begin.previousResult?.questionFields[0],
+      const previousResult = begin.previousResult?.versions.state === predecessor.stateVersion ? begin.previousResult : null;
+      const nextCategory = deterministicExtract(text).updates.find((item) => item.field === "categories")?.value;
+      const categoryChanged = Array.isArray(nextCategory) && JSON.stringify(nextCategory) !== JSON.stringify(predecessor.state.facts.categories?.value);
+      const pendingQuestion = categoryChanged ? undefined : previousResult?.clarification?.field ?? previousResult?.questionFields[0];
+      const verified = await verifiedState.update({ currentState: predecessor.state, userMessage: text, pendingQuestion,
         extract: (message, state, pendingQuestion) => this.model.extract(message, state, pendingQuestion) });
       if (verified.audit.model) audits.push(verified.audit.model);
       understanding = verified.understanding;
@@ -84,7 +107,7 @@ export class ConversationRuntime {
       const memoryProfile = userId
         ? await this.repository.getMemoryProfile(userId)
         : { enabled: false, version: 0, memories: [] };
-      let agentContext = buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version });
+      let agentContext = buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version, previousResult });
       const deterministic = agentContext.hardConstraints.safety === "active_risk"
         ? safetyDecision(checkpoint.state)
         : decide(checkpoint.state, memoryProfile.memories);
@@ -93,8 +116,22 @@ export class ConversationRuntime {
       let fallbackReason: string | undefined;
       let reasonerProposal: AgentTrace["reasonerProposal"];
       const reject = understanding.signals.some((signal) => signal.value === "reject" && signal.subject !== "other" && signal.temporal !== "historical");
+      const declinedAnswer = understanding.signals.some((signal) => signal.value === "decline_answer" && signal.subject === "self" && signal.temporal !== "historical");
       let proposal: FinalDecisionProposal | null = null;
-      if (deterministic.action === "safety" || reject || ["price_answer", "policy_unknown", "budget_conflict", "unavailable"].includes(deterministic.action) || agentContext.hardConstraints.safety === "unclear") {
+      if (declinedAnswer && pendingQuestion && agentContext.hardConstraints.safety === "unclear") {
+        agentContext = { ...agentContext, requiredMissingFields: ["currentDiscomfort"] };
+        proposal = { kind: "direct", source: "rule", reason: "USER_DECLINED_SAFETY_QUESTION", action: "unavailable" };
+      } else if (declinedAnswer && pendingQuestion && agentContext.hardConstraints.safety !== "active_risk") {
+        agentContext = prepareDeterministicCandidates(agentContext);
+        if (agentContext.requiredMissingFields.includes(pendingQuestion)) {
+          proposal = comparableFits(agentContext).length === 2 && agentContext.requiredMissingFields.length === 1
+            ? comparisonProposal(agentContext, pendingQuestion)
+            : { kind: "direct", source: "rule", reason: "USER_DECLINED_REQUIRED_QUESTION", action: "unavailable" };
+        }
+      }
+      if (proposal) {
+        fallbackReason = "USER_DECLINED_REQUIRED_QUESTION";
+      } else if (deterministic.action === "safety" || reject || ["price_answer", "policy_unknown", "budget_conflict", "unavailable"].includes(deterministic.action) || agentContext.hardConstraints.safety === "unclear") {
         agentContext = { ...agentContext, observations: [{ order: 1, tool: "check_safety", outcome: agentContext.hardConstraints.safety }], completedActions: ["check_safety"] };
         proposal = { kind: "direct", source: "rule", reason: reject ? "USER_REJECTED" : deterministic.routeReason, ...(reject && deterministic.action !== "safety" ? { action: "close" as const } : {}) };
       } else {
@@ -103,7 +140,11 @@ export class ConversationRuntime {
         plannerTrace.push(...loop.trace);
         audits.push(...loop.audits);
         fallbackReason = loop.fallbackReason;
-        if (!fallbackReason) {
+        if (loop.questionField) {
+          proposal = { kind: "ask", field: loop.questionField, questionGoal: "确认会改变当前选择的必要信息", evidenceGap: "当前回答尚不能确定该字段" };
+        } else if (loop.comparisonField) {
+          proposal = comparisonProposal(agentContext, loop.comparisonField);
+        } else if (!fallbackReason) {
           try {
             const reasoned = await this.model.finalDecision(agentContext, Math.min(16_000, Math.max(0, deadlineAt - Date.now() - 10_000)));
             audits.push(reasoned.audit);
@@ -116,13 +157,19 @@ export class ConversationRuntime {
           }
         }
       }
-      if (!proposal) proposal = { kind: "direct", source: "fallback", reason: fallbackReason ?? "MODEL_UNAVAILABLE" };
+      if (!proposal) {
+        if (agentContext.hardConstraints.safety !== "active_risk" && agentContext.hardConstraints.safety !== "unclear") {
+          agentContext = prepareDeterministicCandidates(buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version, previousResult }));
+          proposal = deterministicProposal(agentContext, fallbackReason ?? "MODEL_UNAVAILABLE");
+        }
+        if (!proposal) proposal = { kind: "direct", source: "fallback", reason: fallbackReason ?? "MODEL_UNAVAILABLE" };
+      }
       let latest = await this.repository.getSession(sessionId, userId);
       if (!latest) throw new Error("session_not_found");
       let liveMemory = userId ? await this.repository.getMemoryProfile(userId) : memoryProfile;
       let authorization = authorizeFinalDecision({ proposal, context: agentContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: liveMemory.version }, signals: understanding.signals });
       if (authorization.status === "STALE" && latest.appliedInputVersion === begin.inputVersion && liveMemory.version !== agentContext.habits.version) {
-        agentContext = buildAgentContext({ session: latest, memories: liveMemory.memories, memoryVersion: liveMemory.version });
+        agentContext = buildAgentContext({ session: latest, memories: liveMemory.memories, memoryVersion: liveMemory.version, previousResult });
         fallbackReason = "MEMORY_VERSION_CHANGED";
         proposal = { kind: "direct", source: "fallback", reason: fallbackReason };
         authorization = authorizeFinalDecision({ proposal, context: agentContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: liveMemory.version }, signals: understanding.signals });
@@ -134,12 +181,12 @@ export class ConversationRuntime {
       }
       if (authorization.status !== "APPROVED" || !authorization.decision) {
         fallbackReason = authorization.reason;
-        proposal = { kind: "direct", source: "fallback", reason: fallbackReason };
+        proposal = deterministicProposal(agentContext, fallbackReason);
         authorization = authorizeFinalDecision({ proposal, context: agentContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: liveMemory.version }, signals: understanding.signals });
       }
       if (authorization.status !== "APPROVED" || !authorization.decision) throw new Error(`final_authorization_${authorization.reason}`);
       const reasonAuditIndex = audits.findLastIndex((audit) => audit.stage === "reason");
-      if (reasonAuditIndex >= 0) audits[reasonAuditIndex] = { ...audits[reasonAuditIndex], schemaSuccess: reasonerProposal !== undefined, businessAccepted: proposal.kind !== "direct", used: proposal.kind !== "direct" };
+      if (reasonAuditIndex >= 0) audits[reasonAuditIndex] = { ...audits[reasonAuditIndex], schemaSuccess: reasonerProposal !== undefined, businessAccepted: reasonerProposal !== undefined && !fallbackReason, used: reasonerProposal !== undefined && !fallbackReason };
       const draft = authorization.decision;
       agentContext = withDecision(agentContext, draft);
       const agentTrace: AgentTrace = { planner: plannerTrace, observations: agentContext.observations.map(({ order, tool, outcome }) => ({ order, tool, outcome })), ...(reasonerProposal ? { reasonerProposal } : {}), authorization: authorization.status, authorizationReason: authorization.reason, ...(fallbackReason ? { fallbackReason } : {}), versions: agentContext.versions };
@@ -150,8 +197,9 @@ export class ConversationRuntime {
         signals: understanding.signals,
         lifestyle: understanding.lifestyle,
         memories: liveMemory.memories,
-        previousResult: begin.previousResult,
+        previousResult,
         updatedFields,
+        questionAttempt: draft.questionFields[0] ? (matchingProgress(agentContext, draft.questionFields[0])?.askedCount ?? 0) + 1 : undefined,
       });
       let rendered = null;
       let renderFallbackReason: string | undefined;
@@ -172,7 +220,7 @@ export class ConversationRuntime {
         }
       }
 
-      const result = composeResult(draft, checkpoint.state, audits, {
+      const composed = composeResult(draft, checkpoint.state, audits, {
         input: begin.inputVersion,
         state: checkpoint.stateVersion,
         knowledge: KNOWLEDGE_VERSION,
@@ -180,7 +228,7 @@ export class ConversationRuntime {
         signals: understanding.signals,
         lifestyle: understanding.lifestyle,
         memories: liveMemory.memories,
-        previousResult: begin.previousResult,
+        previousResult,
         updatedFields,
         plan,
         rendered,
@@ -189,6 +237,11 @@ export class ConversationRuntime {
         decisionTrace: decisionTrace(agentContext),
         agentTrace,
       });
+      const askedField = composed.questionFields[0];
+      const clarification = askedField ? nextClarificationProgress(agentContext, askedField, draft.routeReason)
+        : ["price_answer", "policy_unknown", "comparison_only"].includes(composed.action) && agentContext.clarification?.goalKey === clarificationGoalKey(checkpoint.state)
+          ? agentContext.clarification : undefined;
+      const result = { ...composed, ...(clarification ? { clarification } : {}) };
       const committed = await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, result);
       if (!committed) {
         const current = await this.repository.getSession(sessionId, userId);

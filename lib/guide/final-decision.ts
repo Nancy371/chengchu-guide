@@ -2,6 +2,7 @@ import { KNOWLEDGE_VERSION, PRODUCTS_BY_SKU } from "./catalog";
 import { decide } from "./decision";
 import { fact } from "./state";
 import { checkBudget, checkEligibility, checkSafety } from "./tools";
+import { LOW_RISK_FIELDS, MAX_LOW_RISK_QUESTIONS, comparableFits, exhaustedLowRiskQuestion, matchingProgress } from "./clarification";
 import type { AgentContext, DecisionDraft, FinalAuthorizationResult, FinalDecisionProposal, ProductFit, Recommendation, StateField, TurnSignal, UserState } from "./types";
 
 export function parseFinalProposal(raw: unknown): FinalDecisionProposal | null {
@@ -13,7 +14,10 @@ export function parseFinalProposal(raw: unknown): FinalDecisionProposal | null {
   if (value.kind === "ask" && typeof value.field === "string" && typeof value.questionGoal === "string" && typeof value.evidenceGap === "string" && value.questionGoal.length <= 160 && value.evidenceGap.length <= 160) {
     return { kind: "ask", field: value.field as StateField, questionGoal: value.questionGoal, evidenceGap: value.evidenceGap };
   }
-  if (value.kind === "direct" && (value.source === "rule" || value.source === "fallback") && typeof value.reason === "string" && (value.action === undefined || value.action === "close")) return { kind: "direct", source: value.source, reason: value.reason, ...(value.action ? { action: "close" } : {}) };
+  if (value.kind === "comparison_only" && Array.isArray(value.skus) && value.skus.length === 2 && value.skus.every((sku) => typeof sku === "string") && new Set(value.skus).size === 2 && Array.isArray(value.evidenceIds) && value.evidenceIds.every((id) => typeof id === "string") && typeof value.field === "string") {
+    return { kind: "comparison_only", skus: value.skus, evidenceIds: value.evidenceIds as string[], field: value.field as StateField };
+  }
+  if (value.kind === "direct" && (value.source === "rule" || value.source === "fallback") && typeof value.reason === "string" && (value.action === undefined || value.action === "close" || value.action === "unavailable")) return { kind: "direct", source: value.source, reason: value.reason, ...(value.action ? { action: value.action } : {}) };
   return null;
 }
 
@@ -39,7 +43,13 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
       if (!input.signals?.some((signal) => signal.value === "reject" && signal.subject !== "other" && signal.temporal !== "historical")) return { status: "REJECTED", reason: "CLOSE_NOT_REQUESTED" };
       return { status: "APPROVED", reason: "USER_REJECTED", decision: { action: "close", route: "direct", routeReason: "用户明确表示停止推荐或暂不购买", questionFields: [], candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: [] } };
     }
+    if (proposal.action === "unavailable") {
+      const declined = input.signals?.some((signal) => signal.value === "decline_answer" && signal.subject === "self" && signal.temporal !== "historical");
+      if (!exhaustedLowRiskQuestion(context) && !(declined && context.requiredMissingFields.length)) return { status: "REJECTED", reason: "UNAVAILABLE_NOT_JUSTIFIED" };
+      return { status: "APPROVED", reason: declined ? "DECLINED_REQUIRED_INFO" : "LOW_RISK_UNRESOLVED", decision: { action: "unavailable", route: "degraded", routeReason: declined ? "用户暂不愿回答必要信息" : "必要偏好仍不明确，无法确定当前组合", questionFields: [], candidateSkus: [], recommendations: [], productFits: [...context.productFits], evidence: [], limitations: [declined && safety.status === "unclear" ? "当前不适还没核实，暂时不能安全推荐；以后想继续选购时仍需要先确认" : "这点偏好仍不明确，暂时不能替你选定组合"] } };
+    }
     const draft = decide(state, [...context.habits.relevant]);
+    if (draft.action === "recommend" && context.requiredMissingFields.length) return { status: "REJECTED", reason: "REQUIRED_FIELD_MISSING" };
     if (draft.action === "recommend") {
       const eligibility = checkEligibility({ skus: draft.candidateSkus, userState: state, memories: context.habits.relevant });
       if (eligibility.unknownSkus.length || eligibility.fits.some((fit) => fit.status !== "eligible")) return { status: "REJECTED", reason: "ELIGIBILITY_FAILED" };
@@ -49,6 +59,20 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
     return { status: "APPROVED", reason: proposal.source === "fallback" ? "DETERMINISTIC_FALLBACK" : "DETERMINISTIC_RULE", decision: draft };
   }
   if (safety.status === "active_risk") return { status: "FALLBACK_REQUIRED", reason: "SAFETY_STOP" };
+  if (proposal.kind === "comparison_only") {
+    const declined = input.signals?.some((signal) => signal.value === "decline_answer" && signal.subject === "self" && signal.temporal !== "historical");
+    const peers = comparableFits(context);
+    if (safety.status === "unclear" || !LOW_RISK_FIELDS.has(proposal.field) || context.requiredMissingFields.length !== 1 || context.requiredMissingFields[0] !== proposal.field || (matchingProgress(context, proposal.field)?.askedCount !== MAX_LOW_RISK_QUESTIONS && !declined) || peers.length !== 2 || proposal.skus.some((sku) => !peers.some((fit) => fit.sku === sku))) return { status: "REJECTED", reason: "COMPARISON_NOT_READY" };
+    const fits = proposal.skus.map((sku) => context.productFits.find((fit) => fit.sku === sku));
+    if (fits.some((fit) => !fit || fit.status !== "eligible" || fit.hardConstraintMatch !== true || fit.budgetStatus === "over" || !context.rawCandidateSkus.includes(fit.sku))) return { status: "REJECTED", reason: "SKU_NOT_AUTHORIZED" };
+    const selected = fits as ProductFit[];
+    const evidence = selected.flatMap((fit) => fit.evidence);
+    const allowedIds = new Set(evidence.map((item) => item.id));
+    if (!proposal.evidenceIds.length || proposal.evidenceIds.some((id) => !allowedIds.has(id))) return { status: "REJECTED", reason: "EVIDENCE_NOT_AUTHORIZED" };
+    const quote = checkBudget({ skus: proposal.skus, budgetFen: fact<number>(state, "budget"), mode: "alternatives" });
+    if (quote.withinBudget === false || quote.unknownSkus.length) return { status: "REJECTED", reason: "BUDGET_EXCEEDED" };
+    return { status: "APPROVED", reason: "FACTUAL_COMPARISON_ONLY", decision: { action: "comparison_only", route: "direct", routeReason: "偏好尚未明确，仅展示通过资格检查的商品事实", questionFields: [], candidateSkus: [...proposal.skus], recommendations: [], productFits: [...context.productFits], evidence: evidence.filter((item) => proposal.evidenceIds.includes(item.id)), limitations: ["未指定主推商品"], pricingMode: "alternatives" } };
+  }
   if (proposal.kind === "ask") {
     if (!context.requiredMissingFields.includes(proposal.field) || !proposal.questionGoal.trim() || !proposal.evidenceGap.trim()) return { status: "FALLBACK_REQUIRED", reason: "QUESTION_NOT_REQUIRED" };
     const draft: DecisionDraft = { action: "clarify", route: "reasoning", routeReason: "最终裁决选择先补充必要信息", questionFields: [proposal.field], candidateSkus: [], recommendations: [], productFits: [...context.productFits], evidence: [], limitations: safety.status === "unclear" ? ["安全信息未明确前不推荐商品"] : [] };

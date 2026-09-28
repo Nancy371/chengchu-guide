@@ -89,6 +89,10 @@ export function decide(state: UserState, memories: HabitMemory[] = [], observe?:
     return { ...draft, action: "price_answer", routeReason: "用户询问手册中明确的商品价格", candidateSkus: [product.sku], recommendations: [productRecommendation(product.sku, fits.find((fit) => fit.sku === product.sku))], evidence: [evidence(`price:${product.sku}`, `${product.sku} 手册标价`, `¥${product.priceFen / 100}`)] };
   }
 
+  if (fact<boolean>(state, "sensitiveTendency") === true && safety.status === "not_provided" && categories.some((category) => category === "cleanser" || category === "moisturizer")) {
+    return { ...draft, questionFields: ["currentDiscomfort"], routeReason: "敏感倾向下需确认当前皮肤是否稳定，再判断商品资格" };
+  }
+
   if (!categories.length) {
     return { ...draft, questionFields: ["categories"], routeReason: "尚未确认需要的商品品类" };
   }

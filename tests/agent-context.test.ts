@@ -40,7 +40,7 @@ test("later safety input yields a fresh safe context and no stale recommendation
   const latest = decideWithContext(buildAgentContext({ session: latestSession }));
   assert.equal(first.currentDecision?.action, "recommend");
   assert.equal(latest.currentDecision?.action, "safety");
-  assert.deepEqual(latest.allowedActions, ["finalize"]);
+  assert.deepEqual(latest.allowedActions, []);
   assert.equal(contextMatchesSession(first, latestSession), false);
   assert.equal(latest.observations[0]?.order, 1);
   assert.equal(JSON.stringify(compileReasoningContext(latest)).includes("test"), false);

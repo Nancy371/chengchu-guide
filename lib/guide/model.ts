@@ -89,7 +89,7 @@ export class DeepSeekModelAdapter {
   async plan(context: AgentContext, timeoutMs: number): Promise<{ proposal: unknown; audit: ModelAudit }> {
     if (timeoutMs < 500) return { proposal: null, audit: this.emptyAudit("planner", "deadline_exhausted") };
     const result = await this.invoke("planner", [
-      { role: "system", content: "你只规划下一步，不推荐、不回答、不修改用户事实。每轮只输出一个合法 JSON 对象，字段为 action、arguments、evidenceNeeded、expectedProgress。action 只能是 search_products、compare_products 或 finalize。search_products 的 arguments 只能是 {\"category\":\"cleanser\"} 等已列在 goal.categories 中的品类；compare_products 只能是 {\"skus\":[\"P101\",\"P102\"]} 等两个已通过资格检查的 SKU；finalize 只能是 {}。严格使用 allowedActions 和已观察到的 SKU；购买多个品类时须分别搜索。搜到全部相关候选后通常 finalize，需要对比且已有两个合法候选时才 compare。不得重复无进展动作。" },
+      { role: "system", content: "你只规划下一步，不推荐、不回答、不修改用户事实。每步只输出一个合法 JSON 对象，字段为 action、arguments、evidenceNeeded、expectedProgress。action 只能是 allowedActions 中的 search_products、compare_products、ask_user 或 finalize。search_products 的 arguments 是已列在 goal.categories 中的 {\"category\":\"cleanser\"}；compare_products 的 arguments 是两个已通过资格检查的 SKU；ask_user 的 arguments 只能是 {\"field\":\"requiredMissingFields 中的一个字段\"}；finalize 的 arguments 是 {}。购买多个品类时须分别搜索。只要还有必要缺口，就选 ask_user，不能 finalize；搜齐候选且没有缺口后才 finalize。不得重复无进展动作。" },
       { role: "user", content: JSON.stringify(compilePlannerContext(context)) },
     ], timeoutMs, false, true, 300);
     return { proposal: result.value, audit: result.audit };
@@ -98,7 +98,7 @@ export class DeepSeekModelAdapter {
   async finalDecision(context: AgentContext, timeoutMs: number): Promise<{ proposal: unknown; audit: ModelAudit }> {
     if (timeoutMs < 500) return { proposal: null, audit: this.emptyAudit("reason", "deadline_exhausted") };
     const result = await this.invoke("reason", [
-      { role: "system", content: "你是最终导购取舍裁决器，只能在已通过系统安全、资格和预算门的 productFits 中选至多两个 SKU，或从 requiredMissingFields 中选一个必须追问的字段。不得生成回复，不得修改事实、价格、功效、政策或安全状态。只输出合法 JSON，二选一：{\"kind\":\"recommend\",\"skus\":[\"P101\"],\"evidenceIds\":[\"已有证据ID\"],\"relation\":\"single\"} 或 {\"kind\":\"ask\",\"field\":\"已有字段ID\",\"questionGoal\":\"提问目的\",\"evidenceGap\":\"缺失信息\"}。推荐时 evidenceIds 必须来自选中 ProductFit 的已有证据；缺少关键字段时选 ask。" },
+      { role: "system", content: "你是最终导购取舍裁决器。Planner 已完成必要澄清，你只从已通过系统安全、资格和预算门的 productFits 中选至多两个 SKU。不得生成回复，不得修改事实、价格、功效、政策或安全状态。只输出合法 JSON：{\"kind\":\"recommend\",\"skus\":[\"P101\"],\"evidenceIds\":[\"已有证据ID\"],\"relation\":\"single\"}。evidenceIds 必须来自选中 ProductFit 的已有证据。" },
       { role: "user", content: JSON.stringify({ goal: context.goal, userState: compileReasoningContext(context).userState, requiredMissingFields: context.requiredMissingFields, productFits: context.productFits.map((fit) => ({ sku: fit.sku, status: fit.status, matches: fit.matches, tradeoffs: fit.tradeoffs, missing: fit.missing, evidenceIds: fit.evidence.map((item) => item.id) })), comparisons: context.observations.filter((item) => item.tool === "compare_products").map((item) => item.data), versions: context.versions }) },
     ], timeoutMs, true, false, 1400);
     return { proposal: result.value, audit: result.audit };
@@ -125,7 +125,7 @@ export class DeepSeekModelAdapter {
   async render(plan: ConversationPlan, timeoutMs = 6000): Promise<{ copy: RenderedCopy | null; audit: ModelAudit }> {
     if (timeoutMs < 500) return { copy: null, audit: this.emptyAudit("render", "deadline_exhausted") };
     const result = await this.invoke("render", [
-      { role: "system", content: `你是澄初导购的受控表达器，只负责承接、过渡、提问和收尾。事实句由 factBlocks 锁定，你只能在 blockIds 中排列，不能复述、改写或新增价格、SKU、功效、安全和政策事实。免费文本中不要出现数字、货币、SKU、医疗承诺、催单或虚构亲身经历。根据 policy 输出 JSON：{acknowledgement:string,blockIds:string[],questions:[{field:string,text:string}],closing:string,actsUsed:string[]}。questions 字段必须与 selectedQuestionFields 完全一致。\n\n说话要求：\n- ${conversationLanguageRules.join("\n- ")}\n- acknowledgement、question 和 closing 都要短；没有实际作用的客套不要写。\n- 直接问价格或结论时先回答，不强加安慰；赶时间或烦躁时更短、更直接。\n- 只写顾客听得懂的话，不解释内部策略、字段名或模型过程。` },
+      { role: "system", content: `你是澄初导购的受控表达器，只负责承接、过渡、提问和收尾。事实句由 factBlocks 锁定，blockIds 必须保持原顺序；不能复述、改写或新增价格、SKU、功效、安全和政策事实。免费文本中不要出现数字、货币、SKU、医疗承诺、催单或虚构亲身经历。根据 policy 输出 JSON：{acknowledgement:string,blockIds:string[],questions:[{field:string,text:string}],closing:string,actsUsed:string[]}。questions 字段必须与 selectedQuestionFields 完全一致；提问参考 questionGoals 的具体问法，不重复空泛问法。comparison_only 只能陈述差别，不能指定主推。\n\n说话要求：\n- ${conversationLanguageRules.join("\n- ")}\n- acknowledgement、question 和 closing 都要短；没有实际作用的客套不要写。\n- 直接问价格或结论时先回答，不强加安慰；赶时间或烦躁时更短、更直接。\n- 只写顾客听得懂的话，不解释内部策略、字段名或模型过程。` },
       { role: "user", content: JSON.stringify({ policy: plan.policy, factBlocks: plan.factBlocks, questionGoals: plan.questionGoals }, null, 2) },
     ], Math.min(6000, timeoutMs), false, true, 600);
     const copy = validateRenderProposal(result.value, plan);

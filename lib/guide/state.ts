@@ -97,13 +97,17 @@ export function deterministicExtract(text: string): StateDelta {
   else if (symptoms.some((item) => item.value === "unclear")) updates.push(update("currentDiscomfort", "unclear", raw, "unclear"));
   else if (symptoms.length === symptomFields.length && symptoms.every((item) => item.value === false) && /(?:没有不适|无不适|现在没事|目前稳定|状态稳定|已经恢复|完全好了|都好了)/.test(compact)) updates.push(update("currentDiscomfort", false, raw));
 
-  if (/必须.*无香|一点香味都没有|不要香味|只要无香|只喜欢无香/.test(compact)) updates.push(update("fragrancePreference", "must_be_fragrance_free", raw));
-  else if (/对香味敏感|闻不了香|香味敏感/.test(compact)) updates.push(update("fragrancePreference", "fragrance_sensitive", raw));
-  else if (/(?:香味|香气|味道).{0,3}(?:都可以|无所谓|随便)/.test(compact)) updates.push(update("fragrancePreference", "no_preference", raw));
-  else if (/可以接受香味|能接受香味|喜欢香味|带香.*可以|(?:喜欢|偏爱)[^，。]{0,8}(?:香|香味)/.test(compact) && !/不喜欢|无香|不接受|讨厌|受不了/.test(compact)) updates.push(update("fragrancePreference", "accepts_fragrance", raw));
+  const currentPreference = /(?:以前|曾经|过去|之前|去年|上次)/.test(compact)
+    ? compact.match(/(?:现在|目前|这次)[^，。；;]*/)?.[0] ?? "" : compact;
+  if (subjectFor(compact) === "self" && currentPreference) {
+    if (/必须.*无香|一点香味都没有|不要香味|只要无香|只喜欢无香/.test(currentPreference)) updates.push(update("fragrancePreference", "must_be_fragrance_free", raw));
+    else if (/对香味敏感|闻不了香|香味敏感/.test(currentPreference)) updates.push(update("fragrancePreference", "fragrance_sensitive", raw));
+    else if (/(?:香味|香气|味道).{0,3}(?:都可以|无所谓|随便)/.test(currentPreference)) updates.push(update("fragrancePreference", "no_preference", raw));
+    else if (/可以接受香味|能接受香味|喜欢香味|带香.*可以|(?:喜欢|偏爱)[^，。]{0,8}(?:香|香味)/.test(currentPreference) && !/不喜欢|无香|不接受|讨厌|受不了/.test(currentPreference)) updates.push(update("fragrancePreference", "accepts_fragrance", raw));
+  }
 
-  if (subjectFor(compact) === "self" && !/(?:以前|曾经|过去|之前|去年|上次|不喜欢|讨厌|受不了)/.test(compact)) {
-    const note = compact.match(/(?:喜欢|偏爱|偏好)([^，。；;！？!?]{1,10}香)/)?.[1];
+  if (subjectFor(compact) === "self" && currentPreference && !/(?:不喜欢|讨厌|受不了)/.test(currentPreference)) {
+    const note = currentPreference.match(/(?:喜欢|偏爱|偏好)([^，。；;！？!?]{1,10}香)/)?.[1];
     if (note && !/^(?:香|味|带香)/.test(note)) updates.push(update("fragranceNote", note, raw));
   }
   if (/你帮我(?:定|选|挑)(?:一款|一个|吧)?|你来帮我选|直接帮我选/.test(compact)) updates.push(update("delegateChoice", true, raw));
@@ -118,9 +122,11 @@ export function deterministicExtract(text: string): StateDelta {
   if (/运动后|健身后|跑步后|游泳后/.test(compact)) occasions.push("exercise");
   if (/出差|旅行|旅游/.test(compact)) occasions.push("travel");
   if (occasions.length) updates.push(update("useOccasions", occasions, raw));
-  if (/不喜欢黏|讨厌黏|不要黏|喜欢轻薄|喜欢清爽/.test(compact)) updates.push(update("texturePreference", "lightweight", raw));
-  if (/洗后紧绷|洗完.*紧绷|洗完.*拔干/.test(compact)) updates.push(update("texturePreference", "avoid_tightness", raw));
-  if (/(?:质地|肤感).{0,3}(?:都可以|无所谓|随便)/.test(compact)) updates.push(update("texturePreference", "no_preference", raw));
+  if (subjectFor(compact) === "self" && currentPreference) {
+    if (/不喜欢黏|讨厌黏|不要黏|(?<!不|没)喜欢轻薄|(?<!不|没)喜欢清爽/.test(currentPreference)) updates.push(update("texturePreference", "lightweight", raw));
+    if (/洗后紧绷|洗完.*紧绷|洗完.*拔干/.test(currentPreference)) updates.push(update("texturePreference", "avoid_tightness", raw));
+    if (/(?:质地|肤感).{0,3}(?:都可以|无所谓|随便)/.test(currentPreference)) updates.push(update("texturePreference", "no_preference", raw));
+  }
   if (/粗糙/.test(compact)) updates.push(update("coreConcern", "roughness", raw));
   if (/清爽|轻薄/.test(compact)) updates.push(update("coreConcern", "fresh_texture", raw));
   if (/简单护理|精简护理/.test(compact)) updates.push(update("coreConcern", "simple_routine", raw));
@@ -156,6 +162,7 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if (/太好了|正合适|很开心|就要这个/.test(compact)) signals.push(signal("emotion", "happy", raw, subject, true, historicalEmotion ? "historical" : "current"));
   if (/(?:网上|线上|淘宝|京东|拼多多).*(?:便宜|低)|为什么.*贵|差价/.test(compact)) signals.push(signal("communication", "price_objection", raw, subject));
   if (isExplicitRejection(compact)) signals.push(signal("communication", "reject", raw, subject));
+  if (/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(compact) && !isExplicitRejection(compact)) signals.push(signal("communication", "decline_answer", raw, subject));
   if (/你理解错|不是这个意思|我说错了|改成|改为|其实是|算了.*还是/.test(compact)) signals.push(signal("communication", "correction", raw, subject));
   if (/赶时间|快一点|直接说|先说结论|别问太多/.test(compact)) signals.push(signal("communication", "hurry", raw, subject));
   if (/直接推荐|直接告诉我|给个结论/.test(compact)) signals.push(signal("communication", "direct_answer", raw, subject));
@@ -172,7 +179,7 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if (/必须.*无香|不要香味|只要无香|只喜欢无香|不喜欢香味/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "must_be_fragrance_free", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   else if (/对香味敏感|闻不了香|香味敏感/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "fragrance_sensitive", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   else if (/喜欢香味|可以接受香味|能接受香味/.test(compact) && !/不喜欢|无香|不接受|讨厌|受不了/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "accepts_fragrance", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
-  if (/不喜欢黏|讨厌黏|不要黏|喜欢轻薄|喜欢清爽/.test(compact)) lifestyle.push({ kind: "texture_preference", value: "lightweight", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
+  if (/不喜欢黏|讨厌黏|不要黏|(?<!不|没)喜欢轻薄|(?<!不|没)喜欢清爽/.test(compact)) lifestyle.push({ kind: "texture_preference", value: "lightweight", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   if (/不想重复买|避免重复买|已有.*不再买|只想买单品|以后.*单品/.test(compact)) lifestyle.push({ kind: "purchase_preference", value: /单品/.test(compact) ? "single_item" : "avoid_duplicate", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
 
   const delta = deterministicExtract(text);
@@ -209,7 +216,7 @@ export function validateDelta(delta: unknown, text: string): StateDelta | null {
     const semanticNote = candidate.field === "fragranceNote" && typeof candidate.value === "string" &&
       candidate.value.length >= 2 && candidate.value.length <= 12 && candidate.quote.includes(candidate.value) &&
       subjectFor(candidate.quote) === "self" && !/(?:以前|曾经|过去|之前|去年|上次|不喜欢|无香|不接受|讨厌|受不了)/.test(candidate.quote) &&
-      /(?:喜欢|偏爱|偏好)/.test(candidate.quote);
+      /(?:喜欢|偏爱|偏好|好闻)/.test(candidate.quote);
     const semanticTexture = candidate.field === "texturePreference" && candidate.value === "lightweight" &&
       subjectFor(candidate.quote) === "self" && !/(?:以前|曾经|过去|之前|去年|上次|不喜欢轻薄|不喜欢清爽)/.test(candidate.quote) &&
       /(?:喜欢|偏爱|偏好)(?:清爽|轻薄|不黏)|(?:讨厌|不喜欢)(?:黏|厚重)/.test(candidate.quote);
@@ -248,7 +255,7 @@ function validFieldValue(field: StateField, value: unknown): value is FactValue 
 }
 
 const signalKinds = new Set<SignalKind>(["emotion", "communication", "lifestyle"]);
-const signalValues = new Set<SignalValue>(["worried", "frustrated", "hesitant", "happy", "price_objection", "reject", "correction", "hurry", "direct_answer", "answer_ambiguous", "morning_rush", "exercise", "travel", "simple_routine", "existing_routine", "sensory_discomfort"]);
+const signalValues = new Set<SignalValue>(["worried", "frustrated", "hesitant", "happy", "price_objection", "reject", "correction", "hurry", "direct_answer", "answer_ambiguous", "decline_answer", "morning_rush", "exercise", "travel", "simple_routine", "existing_routine", "sensory_discomfort"]);
 const habitKinds = new Set(["routine_preference", "frequent_travel", "fragrance_preference", "texture_preference", "purchase_preference"]);
 
 export function validateUnderstanding(value: unknown, text: string, pendingQuestion?: StateField): TurnUnderstanding | null {
@@ -261,6 +268,7 @@ export function validateUnderstanding(value: unknown, text: string, pendingQuest
     const candidate = item as Partial<TurnSignal>;
     if (!candidate.kind || !signalKinds.has(candidate.kind) || !candidate.value || !signalValues.has(candidate.value) || typeof candidate.quote !== "string" || !candidate.quote || !text.includes(candidate.quote)) return [];
     if (candidate.value === "reject" && !isExplicitRejection(text.replace(/\s+/g, ""))) return [];
+    if (candidate.value === "decline_answer" && !/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(text.replace(/\s+/g, ""))) return [];
     if (candidate.value === "answer_ambiguous" && (!pendingQuestion || delta.updates.some((update) => update.field === pendingQuestion))) return [];
     return [{ kind: candidate.kind, value: candidate.value, quote: candidate.quote, explicit: candidate.explicit !== false, subject: candidate.subject === "other" ? "other" : candidate.subject === "unknown" ? "unknown" : "self", temporal: candidate.temporal === "historical" ? "historical" : candidate.temporal === "unclear" ? "unclear" : "current" }];
   }) : [];
@@ -307,6 +315,11 @@ export function applyDelta(state: UserState, delta: StateDelta): UserState {
   if (Array.isArray(nextCategories) && JSON.stringify(nextCategories) !== JSON.stringify(facts.categories?.value)) {
     if (facts.delegateChoice) history.push(facts.delegateChoice);
     delete facts.delegateChoice;
+  }
+  const nextFragrance = delta.updates.find((item) => item.field === "fragrancePreference")?.value;
+  if (nextFragrance && nextFragrance !== "accepts_fragrance" && facts.fragranceNote) {
+    history.push(facts.fragranceNote);
+    delete facts.fragranceNote;
   }
   if (!delta.updates.some((item) => item.field === "policyTopics")) delete facts.policyTopics;
   if (!delta.updates.some((item) => item.field === "claimedOnlinePrice")) delete facts.claimedOnlinePrice;

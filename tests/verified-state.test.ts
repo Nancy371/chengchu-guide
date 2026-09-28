@@ -134,3 +134,16 @@ test("neutral answers and delegated choice stay grounded in the current purchase
   const switched = await verifiedState.update({ currentState: delegate.state, userMessage: "现在只看保湿" });
   assert.equal(fact(switched.state, "delegateChoice"), undefined);
 });
+
+test("semantic scent and texture proposals reject historical, negated and other-person evidence", async () => {
+  const proposals = [
+    { message: "以前喜欢木质香", field: "fragranceNote", value: "木质香" },
+    { message: "帮朋友买，她喜欢桂花香", field: "fragranceNote", value: "桂花香" },
+    { message: "我不喜欢轻薄的质地", field: "texturePreference", value: "lightweight" },
+  ] as const;
+  for (const item of proposals) {
+    const result = await verifiedState.update({ currentState: empty(), userMessage: item.message, extract: async () => ({ audit, proposal: { updates: [{ field: item.field, value: item.value, quote: item.message, status: "confirmed" }], signals: [], lifestyle: [] } }) });
+    assert.equal(result.rejectedProposals.length, 1, item.message);
+    assert.equal(fact(result.state, item.field), undefined, item.message);
+  }
+});

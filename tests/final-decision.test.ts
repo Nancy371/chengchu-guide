@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildAgentContext } from "../lib/guide/agent-context";
+import { clarificationGoalKey } from "../lib/guide/clarification";
 import { authorizeFinalDecision } from "../lib/guide/final-decision";
 import { runPlannerLoop } from "../lib/guide/planner";
 import { applyDelta, deterministicExtract } from "../lib/guide/state";
@@ -49,4 +50,18 @@ test("safety, budget and version changes cannot be overridden", async () => {
   const valid = await searched("我是干皮，预算200，想买洗面奶");
   assert.equal(authorizeFinalDecision({ context: valid, current: { ...current(valid), input: valid.versions.input + 1 }, proposal: { kind: "direct", source: "fallback", reason: "test" } }).status, "STALE");
   assert.equal(authorizeFinalDecision({ context: valid, current: { ...current(valid), memory: 4 }, proposal: { kind: "direct", source: "fallback", reason: "test" } }).status, "STALE");
+});
+
+test("comparison-only requires four sourced questions, two eligible peers and authorized facts", async () => {
+  const context = await searched("想买洗面奶");
+  const proposal = { kind: "comparison_only", skus: ["P101", "P102"], evidenceIds: ["catalog:P101", "catalog:P102"], field: "skinType" };
+  assert.equal(authorizeFinalDecision({ context, current: current(context), proposal }).status, "REJECTED");
+  const ready = { ...context, clarification: { goalKey: clarificationGoalKey(context.userState as UserState), candidateKey: "P101+P102", field: "skinType" as const, askedCount: 4, reason: "肤质会影响选择" } };
+  const approved = authorizeFinalDecision({ context: ready, current: current(ready), proposal });
+  assert.equal(approved.status, "APPROVED");
+  assert.equal(approved.decision?.action, "comparison_only");
+  assert.deepEqual(approved.decision?.recommendations, []);
+  assert.equal(approved.decision?.totalFen, undefined);
+  assert.equal(authorizeFinalDecision({ context: ready, current: current(ready), proposal: { ...proposal, evidenceIds: ["gift:P101"] } }).status, "REJECTED");
+  assert.equal(authorizeFinalDecision({ context: ready, current: { ...current(ready), state: current(ready).state + 1 }, proposal }).status, "STALE");
 });

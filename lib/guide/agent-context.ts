@@ -2,6 +2,7 @@ import { KNOWLEDGE_VERSION, PRODUCTS_BY_SKU } from "./catalog";
 import { decide } from "./decision";
 import { effectiveStateView, fact } from "./state";
 import { checkSafety } from "./tools";
+import { clarificationGoalKey } from "./clarification";
 import type { AgentContext, DecisionDraft, DecisionTrace, HabitMemory, ProductFit, SessionRecord, StateField, ToolObservation, UserState } from "./types";
 
 function relevantHabits(state: UserState, memories: readonly HabitMemory[]): HabitMemory[] {
@@ -15,12 +16,12 @@ function relevantHabits(state: UserState, memories: readonly HabitMemory[]): Hab
 
 function allowedActions(state: UserState, fits: ReadonlyArray<ProductFit> = []): AgentContext["allowedActions"] {
   const safety = checkSafety({ userState: state });
-  if (safety.status === "active_risk" || safety.status === "unclear") return ["finalize"];
-  if (!fact<string[]>(state, "categories")?.length && !fact<string>(state, "targetSku")) return ["finalize"];
-  return fits.some((fit) => fit.status === "eligible") ? ["search_products", "compare_products", "finalize"] : ["search_products", "finalize"];
+  if (safety.status === "active_risk" || safety.status === "unclear") return [];
+  if (!fact<string[]>(state, "categories")?.length && !fact<string>(state, "targetSku")) return ["ask_user"];
+  return fits.some((fit) => fit.status === "eligible") ? ["search_products", "compare_products", "finalize"] : ["search_products"];
 }
 
-export function buildAgentContext(input: { session: SessionRecord; memories?: readonly HabitMemory[]; memoryVersion?: number; remainingTimeBudget?: number }): AgentContext {
+export function buildAgentContext(input: { session: SessionRecord; memories?: readonly HabitMemory[]; memoryVersion?: number; remainingTimeBudget?: number; previousResult?: SessionRecord["result"] }): AgentContext {
   const state = structuredClone(input.session.state);
   const categories = fact<string[]>(state, "categories") ?? [];
   const storedSku = fact<string>(state, "targetSku");
@@ -44,6 +45,7 @@ export function buildAgentContext(input: { session: SessionRecord; memories?: re
     completedActions: [],
     observations: [],
     pendingQuestions: [],
+    ...(input.previousResult?.clarification?.goalKey === clarificationGoalKey(state) ? { clarification: input.previousResult.clarification } : {}),
     allowedActions: allowedActions(state),
     step: 0,
     remainingTimeBudget: input.remainingTimeBudget ?? 40_000,
