@@ -6,6 +6,12 @@ import type { AgentContext, ModelAudit, PlannerAction, ProductFit, ToolObservati
 export const MAX_PLANNER_STEPS = 5;
 const MIN_FINAL_RESERVE_MS = 22_000;
 
+const progressByAction: Record<PlannerAction["action"], { evidenceNeeded: string; expectedProgress: string }> = {
+  search_products: { evidenceNeeded: "当前品类的商品事实", expectedProgress: "取得候选并执行强制资格检查" },
+  compare_products: { evidenceNeeded: "已合格候选的事实差异", expectedProgress: "补足取舍证据" },
+  finalize: { evidenceNeeded: "当前候选和必要信息缺口", expectedProgress: "进入最终裁决" },
+};
+
 export function compilePlannerContext(context: AgentContext) {
   return {
     goal: context.goal,
@@ -27,28 +33,30 @@ export function authorizePlannerAction(raw: unknown, context: AgentContext, comp
   if (!raw || typeof raw !== "object") return { action: null, reason: "INVALID_ACTION" };
   const value = raw as Record<string, unknown>;
   if (typeof value.action !== "string" || !context.allowedActions.includes(value.action as PlannerAction["action"])) return { action: null, reason: "ACTION_NOT_ALLOWED" };
-  if (typeof value.evidenceNeeded !== "string" || typeof value.expectedProgress !== "string" || value.evidenceNeeded.length > 160 || value.expectedProgress.length > 160) return { action: null, reason: "INVALID_PROGRESS" };
   if (!value.arguments || typeof value.arguments !== "object" || Array.isArray(value.arguments)) return { action: null, reason: "INVALID_ARGUMENTS" };
   const args = value.arguments as Record<string, unknown>;
+  // These descriptions are audit metadata, never authority. Normalize them locally
+  // so a harmless wording difference cannot bypass or stall the action schema.
+  const normalized = { ...value, ...progressByAction[value.action as PlannerAction["action"]] } as unknown as PlannerAction;
   if (value.action === "search_products") {
     const category = args.category;
     const valid = ["cleanser", "serum", "moisturizer", "travel"].includes(String(category)) && (context.goal.categories.includes(String(category)) || context.goal.targetSku && PRODUCTS_BY_SKU[context.goal.targetSku]?.category === category);
     if (!valid || Object.keys(args).length !== 1) return { action: null, reason: "CATEGORY_OUT_OF_SCOPE" };
     const key = `search:${category}`;
     if (completed.has(key)) return { action: null, reason: "NO_PROGRESS" };
-    return { action: value as unknown as PlannerAction, reason: "ALLOWED" };
+    return { action: normalized, reason: "ALLOWED" };
   }
   if (value.action === "compare_products") {
     if (Object.keys(args).length !== 1 || !Array.isArray(args.skus) || args.skus.length !== 2 || new Set(args.skus).size !== 2 || args.skus.some((sku) => typeof sku !== "string" || !context.productFits.some((fit) => fit.sku === sku && fit.status === "eligible"))) return { action: null, reason: "SKU_NOT_ELIGIBLE" };
     if (completed.has(`compare:${[...args.skus].sort().join("+")}`)) return { action: null, reason: "NO_PROGRESS" };
-    return { action: value as unknown as PlannerAction, reason: "ALLOWED" };
+    return { action: normalized, reason: "ALLOWED" };
   }
   if (value.action === "finalize") {
     if (Object.keys(args).length) return { action: null, reason: "INVALID_ARGUMENTS" };
     if (context.hardConstraints.safety === "active_risk") return { action: null, reason: "SAFETY_STOP" };
     if (context.goal.type === "buy_product" && context.goal.categories.some((category) => !completed.has(`search:${category}`)) && !context.requiredMissingFields.length) return { action: null, reason: "EVIDENCE_REQUIRED" };
     if (context.goal.type === "buy_product" && !context.rawCandidateSkus.length && !context.requiredMissingFields.length) return { action: null, reason: "EVIDENCE_REQUIRED" };
-    return { action: value as unknown as PlannerAction, reason: "ALLOWED" };
+    return { action: normalized, reason: "ALLOWED" };
   }
   return { action: null, reason: "INVALID_ACTION" };
 }

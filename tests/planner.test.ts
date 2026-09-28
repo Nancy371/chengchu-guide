@@ -30,6 +30,14 @@ test("action policy rejects unknown category, unsearched SKU and unsafe finalize
   assert.equal(authorizePlannerAction(action("finalize", {}), context("想买洗面奶，脸很疼"), new Set()).reason, "SAFETY_STOP");
 });
 
+test("planner audit wording cannot change action authority", () => {
+  const base = context("想买洗面奶");
+  const approved = authorizePlannerAction({ action: "search_products", arguments: { category: "cleanser" }, evidenceNeeded: { text: "wrong shape" } }, base, new Set());
+  assert.equal(approved.reason, "ALLOWED");
+  assert.equal(approved.action?.evidenceNeeded, "当前品类的商品事实");
+  assert.equal(authorizePlannerAction({ action: "search_products", arguments: { category: "serum" } }, base, new Set()).reason, "CATEGORY_OUT_OF_SCOPE");
+});
+
 test("duplicate search gets one retry then stops without progress", async () => {
   const choices = [action("search_products", { category: "cleanser" }), action("search_products", { category: "cleanser" }), action("search_products", { category: "cleanser" })];
   const result = await runPlannerLoop(context("我是干皮，想买洗面奶"), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
