@@ -43,3 +43,23 @@ test("planner failure and short remaining budget exit to deterministic fallback"
   const short = await runPlannerLoop(context("想买洗面奶"), { async plan() { throw new Error("must_not_call"); } }, Date.now() + 10_000);
   assert.equal(short.fallbackReason, "TIME_BUDGET_EXHAUSTED");
 });
+
+test("bundle goal cannot finalize before each category has been searched", async () => {
+  const choices = [
+    action("search_products", { category: "cleanser" }),
+    action("finalize", {}),
+    action("search_products", { category: "moisturizer" }),
+    action("finalize", {}),
+  ];
+  const result = await runPlannerLoop(context("我是干皮，预算500，想买洗面奶和面霜"), { async plan() { return { proposal: choices.shift(), audit }; } }, Date.now() + 40_000);
+  assert.equal(result.trace[1]?.reason, "EVIDENCE_REQUIRED");
+  assert.equal(result.fallbackReason, undefined);
+  assert.ok(result.context.rawCandidateSkus.includes("P101"));
+  assert.ok(result.context.rawCandidateSkus.includes("P202"));
+});
+
+test("planner exception is recorded and does not escape the loop", async () => {
+  const result = await runPlannerLoop(context("想买洗面奶"), { async plan() { throw new Error("network"); } }, Date.now() + 40_000);
+  assert.equal(result.fallbackReason, "PLANNER_EXCEPTION");
+  assert.equal(result.trace[0]?.policy, "rejected");
+});

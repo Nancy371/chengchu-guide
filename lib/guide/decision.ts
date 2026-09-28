@@ -40,9 +40,28 @@ export function decide(state: UserState, memories: HabitMemory[] = [], observe?:
     observe?.(tool, outcome);
     return result;
   };
+  const safety = used("check_safety", checkSafety({ userState: state }), "当前状态：" + String(fact(state, "currentDiscomfort") ?? "未提供"));
+  if (safety.status === "active_risk") {
+    return {
+      ...baseDraft([]),
+      action: "safety",
+      route: "safety",
+      routeReason: "检测到当前明显不适或受损信息",
+      evidence: safety.evidence,
+      limitations: ["不作医疗诊断", "本轮不生成商品推荐"],
+    };
+  }
+  if (safety.status === "unclear") {
+    return {
+      ...baseDraft([]),
+      route: "reasoning",
+      routeReason: "不适表述含糊，需要确认是否仍在发生及是否明显",
+      questionFields: ["currentDiscomfort"],
+      limitations: ["安全信息未明确前不推荐刺激性产品"],
+    };
+  }
   const fits = used("check_eligibility", checkEligibility({ skus: ["P101", "P102", "P201", "P202", "P203", "P301"], userState: state, memories }).fits, "已编译目录候选资格");
   const draft = baseDraft(fits);
-  const safety = used("check_safety", checkSafety({ userState: state }), "当前状态：" + String(fact(state, "currentDiscomfort") ?? "未提供"));
   const intent = fact<string>(state, "intent");
   const storedSku = fact<string>(state, "targetSku");
   const explicitCategories = fact<string[]>(state, "categories") ?? [];
@@ -52,27 +71,6 @@ export function decide(state: UserState, memories: HabitMemory[] = [], observe?:
   const budget = fact<number>(state, "budget");
   const skin = fact<string>(state, "skinType");
   const fragrance = fact<string>(state, "fragrancePreference") ?? memoryValue<string>(memories, "fragrance_preference");
-
-  if (safety.status === "active_risk") {
-    return {
-      ...draft,
-      action: "safety",
-      route: "safety",
-      routeReason: "检测到当前明显不适或受损信息",
-      evidence: safety.evidence,
-      limitations: ["不作医疗诊断", "本轮不生成商品推荐"],
-    };
-  }
-
-  if (safety.status === "unclear") {
-    return {
-      ...draft,
-      route: "reasoning",
-      routeReason: "不适表述含糊，需要确认是否仍在发生及是否明显",
-      questionFields: ["currentDiscomfort"],
-      limitations: ["安全信息未明确前不推荐刺激性产品"],
-    };
-  }
 
   if (policyTopics.length) {
     const policies = used("lookup_policy", lookupPolicy({ topics: policyTopics }), `待确认政策：${policyTopics.join("、")}`);
@@ -144,6 +142,8 @@ export function decide(state: UserState, memories: HabitMemory[] = [], observe?:
 
   if (categories.includes("travel")) {
     const fit = used("check_eligibility", checkEligibility({ skus: ["P301"], userState: state, memories }), "核对 P301 资格").fits[0];
+    if (fit.status === "excluded") return { ...draft, action: "unavailable", routeReason: "P301 未通过当前资格门禁", evidence: fit.evidence, limitations: fit.blockers };
+    if (fit.status === "needs_information") return { ...draft, questionFields: questionsFor(fit.missing as StateField[]), routeReason: "讨论旅行用品前需要补充必要信息", evidence: fit.evidence };
     const quote = used("check_budget", checkBudget({ skus: ["P301"], budgetFen: budget, mode: "single" }), "P301 单品报价");
     if (quote.withinBudget === false) return { ...draft, action: "budget_conflict", routeReason: "旅行用品手册标价超过预算", evidence: [evidence("price:P301", "P301 手册标价", `¥${quote.totalFen! / 100}`)], totalFen: quote.totalFen, budgetGapFen: quote.budgetGapFen, pricingMode: "single" };
     return { ...draft, action: "recommend", routeReason: "旅行携带需求明确", candidateSkus: ["P301"], recommendations: [productRecommendation("P301", fit)], evidence: fit.evidence, totalFen: quote.totalFen, pricingMode: "single" };

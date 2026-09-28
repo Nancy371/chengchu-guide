@@ -1,20 +1,22 @@
 # 架构说明
 
-每轮请求统一进入 `ConversationRuntime.handleTurn(sessionId, requestId, text, userId)`，由三个职责边界清晰的模块完成。
+每轮请求统一进入 `ConversationRuntime.handleTurn(sessionId, requestId, text, userId)`。当前决策链是 `Verified State → Planner → 工具与观察 → Final Decision Reasoner → Final Authorization → Renderer`。明确当前不适会在商品候选生成之前转入安全回应。
 
 ## ConversationRuntime
 
 负责输入落库、请求幂等、版本控制、模型阶段调度、检查点和条件提交。新输入会先增加 `inputVersion` 并清空当前建议；迟到结果只有在输入版本与状态版本仍匹配时才能保存。
 
-抽取完成后，已验证状态在推理前写入 D1。模型失败时，运行时从最新权威状态重新执行本地规则，不直接恢复旧推荐卡。
+抽取完成后，已验证状态在规划前写入 D1。模型失败时，运行时从最新权威状态重新执行本地规则；确定性结果也必须经过同一个最终授权入口，不直接恢复旧推荐卡。
 
 `verifiedState.update` 是正常请求、超时重放和异常回退共用的状态入口。模型字段须有当轮逐字引文，且本地语义识别须支持同一字段值；被拒提案与抽取审计分开记录。刺痛、疼痛、皮肤破损和其他不适各自保留原话及轮次，`currentDiscomfort` 只由这些事实及旧会话未解除风险计算。明确改口会把旧值移入历史，品类与 SKU 冲突时旧 SKU 失效。
 
-## GuideDecision
+## Planner、商品门禁与最终裁决
 
-商品目录、规则函数、候选资格、信息缺口、复杂度路由、排序和算价集中在领域层。`ProductFit` 是普通路径、推理路径和依据面板共享的唯一候选证据。
+Planner 每步只可搜索商品、比较两个已合格候选或申请 `finalize`，最多五步。动作由 `ActionPolicy` 检查范围、参数、重复和证据前置条件；无进展、超时或模型失败则进入确定性回退。Planner 不直接推荐或回复。
 
-模型提案只能从未排除候选中选择，并只能提出允许的追问字段。最终提交前重新计算安全、预算和政策规则。
+搜索返回的原始 SKU 强制经过安全、资格、硬约束和预算检查，才形成 `ProductFit`。`check_safety` 与 `check_eligibility` 不由 Planner 选择是否调用。商品目录、规则函数和确定性算价仍集中在领域层；比较工具只组织已核实差异。
+
+Final Decision Reasoner 只可从合法 `ProductFit` 中选最多两个 SKU 及已有证据 ID，或从当前必要缺口中选一个问题字段。`authorizeFinalDecision()` 重新核对 SKU、证据、预算、价格关系、安全和输入／状态／知识／记忆版本。模型提案和获准结果分别保留。规则直达和回退也必须经过此入口。依据抽屉展示规划、工具、提案、授权及降级摘要。
 
 ## Conversation Skills 与 ResponseComposer
 
@@ -25,8 +27,8 @@ Renderer 使用 `deepseek-flash` 非思考模式，只能排列事实块并生�
 ## 模型调用
 
 - Extractor：`deepseek-flash` 非思考模式，8 秒上限，输出带原话引用的状态增量。
-- Reasoner：`deepseek-v4-pro` 思考模式，仅处理复杂冲突或安全歧义，24 秒上限，默认 2,048 token。
-- Normalizer：本地先解析；必要时调用一次 `deepseek-flash` 非思考模式完成格式修复，6 秒上限。只能修表示形式，不能增加事实或候选。
+- Planner：`deepseek-flash` 非思考模式，单步不超过 2.5 秒，只输出结构化动作。
+- Final Decision Reasoner：`deepseek-v4-pro` 思考模式，在 Planner 完成证据收集后提出最终取舍或必要追问；调用预算最多 16 秒，输出仅供本地授权。
 - Renderer：`deepseek-flash` 非思考模式，6 秒与 600 token 上限；只进行受控表层表达。
 
 模型通过 DeepSeek 的 OpenAI 兼容 `/chat/completions` 接口调用。每次请求都显式设置思考模式，避免服务端默认值变化影响路由职责；`reasoning_content` 不写入事实库，也不在顾客界面展示。

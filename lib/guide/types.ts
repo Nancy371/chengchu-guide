@@ -266,7 +266,7 @@ export type PlannerAction =
 export type FinalDecisionProposal =
   | { kind: "recommend"; skus: string[]; evidenceIds: string[]; relation: "single" | "bundle" | "alternatives" }
   | { kind: "ask"; field: StateField; questionGoal: string; evidenceGap: string }
-  | { kind: "direct"; source: "rule" | "fallback"; reason: string };
+  | { kind: "direct"; source: "rule" | "fallback"; reason: string; action?: "close" };
 
 export interface FinalAuthorizationResult {
   status: "APPROVED" | "REJECTED" | "STALE" | "FALLBACK_REQUIRED";
@@ -277,7 +277,7 @@ export interface FinalAuthorizationResult {
 export interface AgentTrace {
   planner: Array<{ step: number; action: string; policy: "allowed" | "rejected"; reason: string }>;
   observations: Array<{ order: number; tool: DecisionToolName; outcome: string }>;
-  reasonerProposal?: { kind: FinalDecisionProposal["kind"]; skus?: string[]; field?: StateField };
+  reasonerProposal?: Extract<FinalDecisionProposal, { kind: "recommend" | "ask" }>;
   authorization: FinalAuthorizationResult["status"];
   authorizationReason: string;
   fallbackReason?: string;

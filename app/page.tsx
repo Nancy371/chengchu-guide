@@ -251,6 +251,14 @@ function EvidenceDrawer({ result }: { result: DecisionResult | null }) {
                         <p>资格结果 <strong>{result.decisionTrace.eligibility.map((item) => `${item.sku}: ${item.status}`).join("、") || "无"}</strong></p>
                       </>
                     ) : null}
+                    {result.agentTrace ? (
+                      <>
+                        <p>规划步骤 <strong>{result.agentTrace.planner.map((item) => `${item.action}（${item.policy === "allowed" ? "通过" : "拒绝"}）`).join(" → ") || "规则直达"}</strong></p>
+                        <p>最终授权 <strong>{result.agentTrace.authorization} · {result.agentTrace.authorizationReason}</strong></p>
+                        {result.agentTrace.reasonerProposal ? <p>模型提案 <strong>{result.agentTrace.reasonerProposal.kind === "ask" ? `追问 ${result.agentTrace.reasonerProposal.field}` : result.agentTrace.reasonerProposal.skus.join("、")}</strong></p> : null}
+                        {result.agentTrace.fallbackReason ? <p>降级原因 <strong>{result.agentTrace.fallbackReason}</strong></p> : null}
+                      </>
+                    ) : null}
                     {(result.audits ?? []).map((audit, index) => (
                       <p key={`${audit.stage}-${index}`}>{audit.stage} · {audit.modelInvoked ? `${audit.model} / ${audit.used ? "已采用" : "未采用"}` : "本地降级"} · {audit.latencyMs}ms</p>
                     ))}

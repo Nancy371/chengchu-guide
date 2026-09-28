@@ -1,12 +1,14 @@
 import { planConversation, renderTemplate } from "./conversation";
-import { buildAgentContext, decideWithContext, decisionTrace, withDecision } from "./agent-context";
-import { applyReasoningProposal, KNOWLEDGE_VERSION } from "./decision";
+import { buildAgentContext, decisionTrace, withDecision } from "./agent-context";
+import { decide, KNOWLEDGE_VERSION } from "./decision";
+import { authorizeFinalDecision, parseFinalProposal, safetyDecision } from "./final-decision";
+import { runPlannerLoop } from "./planner";
 import { DeepSeekModelAdapter } from "./model";
 import { D1GuideRepository } from "./repository";
 import { composeResult } from "./response";
 import { deterministicUnderstand } from "./state";
 import { verifiedState } from "./verified-state";
-import type { DecisionResult, ModelAudit, SessionRecord, TurnUnderstanding } from "./types";
+import type { AgentTrace, DecisionResult, FinalDecisionProposal, ModelAudit, SessionRecord, TurnUnderstanding } from "./types";
 
 const PREDECESSOR_TIMEOUT_MS = 12_000;
 
@@ -82,27 +84,72 @@ export class ConversationRuntime {
       const memoryProfile = userId
         ? await this.repository.getMemoryProfile(userId)
         : { enabled: false, version: 0, memories: [] };
-      let agentContext = decideWithContext(buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version }));
-      let draft = agentContext.currentDecision!;
-      const deadlineAt = startedAt + (draft.route === "reasoning" ? 40_000 : 20_000);
-      if (draft.route === "reasoning") {
-        const reasoned = await this.model.reason(agentContext, deadlineAt);
-        audits.push(...reasoned.audits);
-        draft = applyReasoningProposal(draft, reasoned.proposal, checkpoint.state);
-        agentContext = withDecision(agentContext, draft);
+      let agentContext = buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version });
+      const deterministic = agentContext.hardConstraints.safety === "active_risk"
+        ? safetyDecision(checkpoint.state)
+        : decide(checkpoint.state, memoryProfile.memories);
+      const deadlineAt = startedAt + (["safety", "price_answer", "policy_unknown", "budget_conflict", "unavailable"].includes(deterministic.action) ? 20_000 : 40_000);
+      const plannerTrace: AgentTrace["planner"] = [];
+      let fallbackReason: string | undefined;
+      let reasonerProposal: AgentTrace["reasonerProposal"];
+      const reject = understanding.signals.some((signal) => signal.value === "reject" && signal.subject !== "other" && signal.temporal !== "historical");
+      let proposal: FinalDecisionProposal | null = null;
+      if (deterministic.action === "safety" || reject || ["price_answer", "policy_unknown", "budget_conflict", "unavailable"].includes(deterministic.action) || agentContext.hardConstraints.safety === "unclear") {
+        agentContext = { ...agentContext, observations: [{ order: 1, tool: "check_safety", outcome: agentContext.hardConstraints.safety }], completedActions: ["check_safety"] };
+        proposal = { kind: "direct", source: "rule", reason: reject ? "USER_REJECTED" : deterministic.routeReason, ...(reject && deterministic.action !== "safety" ? { action: "close" as const } : {}) };
+      } else {
+        const loop = await runPlannerLoop(agentContext, this.model, deadlineAt);
+        agentContext = loop.context;
+        plannerTrace.push(...loop.trace);
+        audits.push(...loop.audits);
+        fallbackReason = loop.fallbackReason;
+        if (!fallbackReason) {
+          try {
+            const reasoned = await this.model.finalDecision(agentContext, Math.min(16_000, Math.max(0, deadlineAt - Date.now() - 10_000)));
+            audits.push(reasoned.audit);
+            proposal = parseFinalProposal(reasoned.proposal);
+            if (proposal?.kind === "direct") proposal = null;
+            if (proposal?.kind === "recommend" || proposal?.kind === "ask") reasonerProposal = proposal;
+            if (!proposal) fallbackReason = reasoned.audit.failureReason ?? "INVALID_REASONER_PROPOSAL";
+          } catch {
+            fallbackReason = "REASONER_EXCEPTION";
+          }
+        }
       }
-
-      agentContext = decideWithContext(agentContext);
-      const revalidated = agentContext.currentDecision!;
-      if (["safety", "budget_conflict", "policy_unknown", "close"].includes(revalidated.action)) draft = revalidated;
+      if (!proposal) proposal = { kind: "direct", source: "fallback", reason: fallbackReason ?? "MODEL_UNAVAILABLE" };
+      let latest = await this.repository.getSession(sessionId, userId);
+      if (!latest) throw new Error("session_not_found");
+      let liveMemory = userId ? await this.repository.getMemoryProfile(userId) : memoryProfile;
+      let authorization = authorizeFinalDecision({ proposal, context: agentContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: liveMemory.version }, signals: understanding.signals });
+      if (authorization.status === "STALE" && latest.appliedInputVersion === begin.inputVersion && liveMemory.version !== agentContext.habits.version) {
+        agentContext = buildAgentContext({ session: latest, memories: liveMemory.memories, memoryVersion: liveMemory.version });
+        fallbackReason = "MEMORY_VERSION_CHANGED";
+        proposal = { kind: "direct", source: "fallback", reason: fallbackReason };
+        authorization = authorizeFinalDecision({ proposal, context: agentContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: liveMemory.version }, signals: understanding.signals });
+      }
+      if (authorization.status === "STALE") {
+        const stale = staleResult(latest);
+        await this.repository.failTurn(sessionId, requestId, stale);
+        return { result: stale, duplicate: false, stale: true };
+      }
+      if (authorization.status !== "APPROVED" || !authorization.decision) {
+        fallbackReason = authorization.reason;
+        proposal = { kind: "direct", source: "fallback", reason: fallbackReason };
+        authorization = authorizeFinalDecision({ proposal, context: agentContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: liveMemory.version }, signals: understanding.signals });
+      }
+      if (authorization.status !== "APPROVED" || !authorization.decision) throw new Error(`final_authorization_${authorization.reason}`);
+      const reasonAuditIndex = audits.findLastIndex((audit) => audit.stage === "reason");
+      if (reasonAuditIndex >= 0) audits[reasonAuditIndex] = { ...audits[reasonAuditIndex], schemaSuccess: reasonerProposal !== undefined, businessAccepted: proposal.kind !== "direct", used: proposal.kind !== "direct" };
+      const draft = authorization.decision;
       agentContext = withDecision(agentContext, draft);
+      const agentTrace: AgentTrace = { planner: plannerTrace, observations: agentContext.observations.map(({ order, tool, outcome }) => ({ order, tool, outcome })), ...(reasonerProposal ? { reasonerProposal } : {}), authorization: authorization.status, authorizationReason: authorization.reason, ...(fallbackReason ? { fallbackReason } : {}), versions: agentContext.versions };
 
       const plan = planConversation({
         draft,
         state: checkpoint.state,
         signals: understanding.signals,
         lifestyle: understanding.lifestyle,
-        memories: memoryProfile.memories,
+        memories: liveMemory.memories,
         previousResult: begin.previousResult,
         updatedFields,
       });
@@ -132,7 +179,7 @@ export class ConversationRuntime {
       }, {
         signals: understanding.signals,
         lifestyle: understanding.lifestyle,
-        memories: memoryProfile.memories,
+        memories: liveMemory.memories,
         previousResult: begin.previousResult,
         updatedFields,
         plan,
@@ -140,6 +187,7 @@ export class ConversationRuntime {
         renderSource: rendered && !renderFallbackReason ? "model" : "template",
         renderFallbackReason,
         decisionTrace: decisionTrace(agentContext),
+        agentTrace,
       });
       const committed = await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, result);
       if (!committed) {
@@ -150,14 +198,14 @@ export class ConversationRuntime {
         return { result: stale, duplicate: false, stale: true };
       }
 
-      if (userId && memoryProfile.enabled) {
+      if (userId && liveMemory.enabled) {
         try {
           await this.repository.saveHabitObservations({
             userId,
             sessionId,
             inputVersion: begin.inputVersion,
             stateVersion: checkpoint.stateVersion,
-            settingsVersion: memoryProfile.version,
+            settingsVersion: liveMemory.version,
             turn: checkpoint.state.turn,
             observations: understanding.lifestyle,
           });
@@ -175,11 +223,15 @@ export class ConversationRuntime {
       }
       const latest = await this.repository.getSession(sessionId, userId);
       if (checkpoint && latest?.inputVersion === begin.inputVersion && latest.appliedInputVersion === begin.inputVersion) {
-        const fallbackContext = decideWithContext(buildAgentContext({ session: checkpoint }));
-        const fallback = composeResult(fallbackContext.currentDecision!, checkpoint.state, audits,
+        const latestMemory = userId ? await this.repository.getMemoryProfile(userId) : { version: 0, memories: [] };
+        const fallbackContext = buildAgentContext({ session: latest, memories: latestMemory.memories, memoryVersion: latestMemory.version });
+        const authorized = authorizeFinalDecision({ proposal: { kind: "direct", source: "fallback", reason: "RUNTIME_EXCEPTION" }, context: fallbackContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: latestMemory.version }, signals: understanding.signals });
+        if (authorized.status !== "APPROVED" || !authorized.decision) throw error;
+        const fallback = composeResult(authorized.decision, checkpoint.state, audits,
           { input: begin.inputVersion, state: checkpoint.stateVersion, knowledge: KNOWLEDGE_VERSION },
           { signals: understanding.signals, lifestyle: understanding.lifestyle, previousResult: begin.previousResult,
-            updatedFields: understanding.delta.updates.map((item) => item.field), renderFallbackReason: "runtime_fallback", decisionTrace: decisionTrace(fallbackContext) });
+            updatedFields: understanding.delta.updates.map((item) => item.field), renderFallbackReason: "runtime_fallback", decisionTrace: decisionTrace(withDecision(fallbackContext, authorized.decision)),
+            agentTrace: { planner: [], observations: [], authorization: authorized.status, authorizationReason: authorized.reason, fallbackReason: "RUNTIME_EXCEPTION", versions: fallbackContext.versions } });
         if (await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, fallback)) {
           return { result: fallback, duplicate: false, stale: false };
         }

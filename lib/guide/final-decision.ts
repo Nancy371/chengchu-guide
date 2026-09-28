@@ -2,7 +2,7 @@ import { KNOWLEDGE_VERSION, PRODUCTS_BY_SKU } from "./catalog";
 import { decide } from "./decision";
 import { fact } from "./state";
 import { checkBudget, checkEligibility, checkSafety } from "./tools";
-import type { AgentContext, DecisionDraft, FinalAuthorizationResult, FinalDecisionProposal, ProductFit, Recommendation, StateField, UserState } from "./types";
+import type { AgentContext, DecisionDraft, FinalAuthorizationResult, FinalDecisionProposal, ProductFit, Recommendation, StateField, TurnSignal, UserState } from "./types";
 
 export function parseFinalProposal(raw: unknown): FinalDecisionProposal | null {
   if (!raw || typeof raw !== "object") return null;
@@ -13,7 +13,7 @@ export function parseFinalProposal(raw: unknown): FinalDecisionProposal | null {
   if (value.kind === "ask" && typeof value.field === "string" && typeof value.questionGoal === "string" && typeof value.evidenceGap === "string" && value.questionGoal.length <= 160 && value.evidenceGap.length <= 160) {
     return { kind: "ask", field: value.field as StateField, questionGoal: value.questionGoal, evidenceGap: value.evidenceGap };
   }
-  if (value.kind === "direct" && (value.source === "rule" || value.source === "fallback") && typeof value.reason === "string") return { kind: "direct", source: value.source, reason: value.reason };
+  if (value.kind === "direct" && (value.source === "rule" || value.source === "fallback") && typeof value.reason === "string" && (value.action === undefined || value.action === "close")) return { kind: "direct", source: value.source, reason: value.reason, ...(value.action ? { action: "close" } : {}) };
   return null;
 }
 
@@ -22,7 +22,11 @@ function recommendation(fit: ProductFit): Recommendation {
   return { sku: fit.sku, name: product.name, priceFen: product.priceFen, quantity: 1, reasons: fit.matches.slice(0, 3), tradeoffs: [...product.limitations, ...fit.tradeoffs].slice(0, 3) };
 }
 
-export function authorizeFinalDecision(input: { proposal: unknown; context: AgentContext; current: { input: number; state: number; knowledge: string; memory: number } }): FinalAuthorizationResult {
+export function safetyDecision(state: UserState): DecisionDraft {
+  return { action: "safety", route: "safety", routeReason: "检测到当前明显不适或受损信息", questionFields: [], candidateSkus: [], recommendations: [], productFits: [], evidence: checkSafety({ userState: state }).evidence, limitations: ["不作医疗诊断", "本轮不生成商品推荐"] };
+}
+
+export function authorizeFinalDecision(input: { proposal: unknown; context: AgentContext; current: { input: number; state: number; knowledge: string; memory: number }; signals?: TurnSignal[] }): FinalAuthorizationResult {
   const { context, current } = input;
   if (context.versions.input !== current.input || context.versions.state !== current.state || context.versions.knowledge !== current.knowledge || current.knowledge !== KNOWLEDGE_VERSION || context.habits.version !== current.memory) return { status: "STALE", reason: "VERSION_MISMATCH" };
   const proposal = parseFinalProposal(input.proposal);
@@ -30,8 +34,12 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
   const state = context.userState as UserState;
   const safety = checkSafety({ userState: state });
   if (proposal.kind === "direct") {
+    if (safety.status === "active_risk") return { status: "APPROVED", reason: "SAFETY_STOP", decision: safetyDecision(state) };
+    if (proposal.action === "close") {
+      if (!input.signals?.some((signal) => signal.value === "reject" && signal.subject !== "other" && signal.temporal !== "historical")) return { status: "REJECTED", reason: "CLOSE_NOT_REQUESTED" };
+      return { status: "APPROVED", reason: "USER_REJECTED", decision: { action: "close", route: "direct", routeReason: "用户明确表示停止推荐或暂不购买", questionFields: [], candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: [] } };
+    }
     const draft = decide(state, [...context.habits.relevant]);
-    if (safety.status === "active_risk" && draft.action !== "safety") return { status: "REJECTED", reason: "SAFETY_STOP" };
     if (draft.action === "recommend") {
       const eligibility = checkEligibility({ skus: draft.candidateSkus, userState: state, memories: context.habits.relevant });
       if (eligibility.unknownSkus.length || eligibility.fits.some((fit) => fit.status !== "eligible")) return { status: "REJECTED", reason: "ELIGIBILITY_FAILED" };

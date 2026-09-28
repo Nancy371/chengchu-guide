@@ -89,7 +89,7 @@ export class DeepSeekModelAdapter {
   async plan(context: AgentContext, timeoutMs: number): Promise<{ proposal: unknown; audit: ModelAudit }> {
     if (timeoutMs < 500) return { proposal: null, audit: this.emptyAudit("planner", "deadline_exhausted") };
     const result = await this.invoke("planner", [
-      { role: "system", content: "你只规划下一步，不推荐、不回答、不修改用户事实。每轮只输出一个 JSON：{action:'search_products'|'compare_products'|'finalize',arguments:{},evidenceNeeded:string,expectedProgress:string}。search_products 的 arguments 只能是 {category:'cleanser'|'serum'|'moisturizer'|'travel'}；compare_products 只能是 {skus:[两个已通过资格检查的 SKU]}；finalize 只能是 {}。严格使用 allowedActions 和已观察到的 SKU；搜到候选后通常 finalize，需要对比且已有两个合法候选时才 compare。不得重复无进展动作。" },
+      { role: "system", content: "你只规划下一步，不推荐、不回答、不修改用户事实。每轮只输出一个合法 JSON 对象，字段为 action、arguments、evidenceNeeded、expectedProgress。action 只能是 search_products、compare_products 或 finalize。search_products 的 arguments 只能是 {\"category\":\"cleanser\"} 等已列在 goal.categories 中的品类；compare_products 只能是 {\"skus\":[\"P101\",\"P102\"]} 等两个已通过资格检查的 SKU；finalize 只能是 {}。严格使用 allowedActions 和已观察到的 SKU；购买多个品类时须分别搜索。搜到全部相关候选后通常 finalize，需要对比且已有两个合法候选时才 compare。不得重复无进展动作。" },
       { role: "user", content: JSON.stringify(compilePlannerContext(context)) },
     ], timeoutMs, false, true, 300);
     return { proposal: result.value, audit: result.audit };
@@ -98,7 +98,7 @@ export class DeepSeekModelAdapter {
   async finalDecision(context: AgentContext, timeoutMs: number): Promise<{ proposal: unknown; audit: ModelAudit }> {
     if (timeoutMs < 500) return { proposal: null, audit: this.emptyAudit("reason", "deadline_exhausted") };
     const result = await this.invoke("reason", [
-      { role: "system", content: "你是最终导购取舍裁决器，只能在已通过系统安全、资格和预算门的 productFits 中选至多两个 SKU，或从 requiredMissingFields 中选一个必须追问的字段。不得生成回复，不得修改事实、价格、功效、政策或安全状态。只输出 JSON，二选一：{kind:'recommend',skus:string[],evidenceIds:string[],relation:'single'|'bundle'|'alternatives'} 或 {kind:'ask',field:string,questionGoal:string,evidenceGap:string}。推荐时 evidenceIds 必须来自选中 ProductFit 的已有证据；缺少关键字段时选 ask。" },
+      { role: "system", content: "你是最终导购取舍裁决器，只能在已通过系统安全、资格和预算门的 productFits 中选至多两个 SKU，或从 requiredMissingFields 中选一个必须追问的字段。不得生成回复，不得修改事实、价格、功效、政策或安全状态。只输出合法 JSON，二选一：{\"kind\":\"recommend\",\"skus\":[\"P101\"],\"evidenceIds\":[\"已有证据ID\"],\"relation\":\"single\"} 或 {\"kind\":\"ask\",\"field\":\"已有字段ID\",\"questionGoal\":\"提问目的\",\"evidenceGap\":\"缺失信息\"}。推荐时 evidenceIds 必须来自选中 ProductFit 的已有证据；缺少关键字段时选 ask。" },
       { role: "user", content: JSON.stringify({ goal: context.goal, userState: compileReasoningContext(context).userState, requiredMissingFields: context.requiredMissingFields, productFits: context.productFits.map((fit) => ({ sku: fit.sku, status: fit.status, matches: fit.matches, tradeoffs: fit.tradeoffs, missing: fit.missing, evidenceIds: fit.evidence.map((item) => item.id) })), comparisons: context.observations.filter((item) => item.tool === "compare_products").map((item) => item.data), versions: context.versions }) },
     ], timeoutMs, true, false, 1400);
     return { proposal: result.value, audit: result.audit };

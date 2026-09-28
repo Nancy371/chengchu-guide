@@ -46,6 +46,7 @@ export function authorizePlannerAction(raw: unknown, context: AgentContext, comp
   if (value.action === "finalize") {
     if (Object.keys(args).length) return { action: null, reason: "INVALID_ARGUMENTS" };
     if (context.hardConstraints.safety === "active_risk") return { action: null, reason: "SAFETY_STOP" };
+    if (context.goal.type === "buy_product" && context.goal.categories.some((category) => !completed.has(`search:${category}`)) && !context.requiredMissingFields.length) return { action: null, reason: "EVIDENCE_REQUIRED" };
     if (context.goal.type === "buy_product" && !context.rawCandidateSkus.length && !context.requiredMissingFields.length) return { action: null, reason: "EVIDENCE_REQUIRED" };
     return { action: value as unknown as PlannerAction, reason: "ALLOWED" };
   }
@@ -69,10 +70,16 @@ export async function runPlannerLoop(context: AgentContext, planner: { plan(cont
     const remaining = deadlineAt - Date.now();
     if (remaining < MIN_FINAL_RESERVE_MS) return { context: current, trace, audits, fallbackReason: "TIME_BUDGET_EXHAUSTED" };
     current = { ...current, step, remainingTimeBudget: remaining };
-    const planned = await planner.plan(current, Math.min(2_500, remaining - MIN_FINAL_RESERVE_MS));
-    audits.push(planned.audit);
+    let planned: Awaited<ReturnType<typeof planner.plan>>;
+    try {
+      planned = await planner.plan(current, Math.min(2_500, remaining - MIN_FINAL_RESERVE_MS));
+    } catch {
+      trace.push({ step, action: "invalid", policy: "rejected", reason: "PLANNER_EXCEPTION" });
+      return { context: current, trace, audits, fallbackReason: "PLANNER_EXCEPTION" };
+    }
     const checked = authorizePlannerAction(planned.proposal, current, completed);
-    trace.push({ step, action: planned.proposal && typeof planned.proposal === "object" ? String((planned.proposal as { action?: unknown }).action ?? "invalid") : "invalid", policy: checked.action ? "allowed" : "rejected", reason: checked.reason });
+    audits.push({ ...planned.audit, schemaSuccess: planned.proposal !== null, businessAccepted: checked.action !== null, used: checked.action !== null, ...(!checked.action ? { failureReason: planned.audit.failureReason ?? checked.reason } : {}) });
+    trace.push({ step, action: planned.proposal && typeof planned.proposal === "object" ? String((planned.proposal as { action?: unknown }).action ?? "invalid") : "invalid", policy: checked.action ? "allowed" : "rejected", reason: planned.proposal ? checked.reason : planned.audit.failureReason ?? checked.reason });
     if (!checked.action) {
       if (!planned.proposal) return { context: current, trace, audits, fallbackReason: planned.audit.failureReason ?? "PLANNER_UNAVAILABLE" };
       if (++rejected >= 2) return { context: current, trace, audits, fallbackReason: checked.reason };

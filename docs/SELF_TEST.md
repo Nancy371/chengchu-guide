@@ -1,5 +1,11 @@
 # 真实自测记录
 
+## 受控 Planner 版本（2026-09-28）
+
+本地 Worker + D1 的真实三轮会话依次输入 `我是干皮，预算200，想买洗面奶`、`预算改成100`、`没有刺痛，但皮肤破损`。实际动作依次为 `recommend`（P101/P102 两个备选）、`budget_conflict`（两款洁面均超过 ¥100）、`safety`（零推荐）。三个结果均显示 `APPROVED` 授权，输入／状态版本依次为 1/1、2/2、3/3。本地未配置模型密钥，第一轮 Planner 记录 `model_not_configured` 并经确定性回退；此记录不证明真实模型链路已通过。
+
+94 项自动测试与 50/50 条冻结导购评测通过；TypeScript 类型检查和 Vinext 生产构建通过。新增测试覆盖：多品类检索前不得结束规划、重复动作和 Planner 异常、越权 Final Reasoner 提案被拒绝并重新授权回退，以及迟到 Planner/Reasoner 不能覆盖新的安全输入。公网版本及真实模型调用须在本次发布后另行验收，不能以本地回退代替。
+
 测试日期：2026-09-27
 环境：本地 Cloudflare Worker + D1 完成规则、会话、API 与 WebMCP 回归；Sites 生产环境已将 `DEEPSEEK_API_KEY` 作为 Secret 配置并发布环境修订 1。
 

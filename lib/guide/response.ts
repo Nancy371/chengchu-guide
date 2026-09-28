@@ -1,5 +1,5 @@
 import { planConversation, renderTemplate, type ConversationPlan, type RenderedCopy } from "./conversation";
-import type { DecisionDraft, DecisionResult, DecisionTrace, HabitMemory, LifestyleObservation, ModelAudit, StateField, TurnSignal, UserState } from "./types";
+import type { AgentTrace, DecisionDraft, DecisionResult, DecisionTrace, HabitMemory, LifestyleObservation, ModelAudit, StateField, TurnSignal, UserState } from "./types";
 
 interface ComposeContext {
   signals?: TurnSignal[];
@@ -12,6 +12,7 @@ interface ComposeContext {
   renderSource?: "model" | "template";
   renderFallbackReason?: string;
   decisionTrace?: DecisionTrace;
+  agentTrace?: AgentTrace;
 }
 
 export function composeResult(
@@ -54,6 +55,7 @@ export function composeResult(
     },
     versions,
     ...(context.decisionTrace ? { decisionTrace: { ...context.decisionTrace, routeReason: finalDraft.routeReason } } : {}),
+    ...(context.agentTrace ? { agentTrace: context.agentTrace } : {}),
   };
 }
 

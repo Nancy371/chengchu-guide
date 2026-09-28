@@ -58,13 +58,21 @@ class MemoryRepository {
   async getMemoryProfile() { return { enabled: false, version: 0, memories: [] }; }
 }
 
-function runtime(repo: MemoryRepository, options: { renderGate?: ReturnType<typeof deferred>; extractGate?: ReturnType<typeof deferred>; rejectedRender?: boolean; reviewThrows?: boolean } = {}) {
+function runtime(repo: MemoryRepository, options: { renderGate?: ReturnType<typeof deferred>; extractGate?: ReturnType<typeof deferred>; plannerGate?: ReturnType<typeof deferred>; reasonerGate?: ReturnType<typeof deferred>; plannerActions?: unknown[]; reasonerProposal?: unknown; rejectedRender?: boolean; reviewThrows?: boolean } = {}) {
   const model = {
     async extract(text: string) {
       if (options.extractGate && text.includes("P101")) await options.extractGate.promise;
       return { understanding: null, proposal: null, audit: modelAudit("extract") };
     },
     async reason() { return { proposal: null, audits: [modelAudit("reason")] }; },
+    async plan() {
+      if (options.plannerGate) await options.plannerGate.promise;
+      return { proposal: options.plannerActions?.shift() ?? null, audit: modelAudit("planner") };
+    },
+    async finalDecision() {
+      if (options.reasonerGate) await options.reasonerGate.promise;
+      return { proposal: options.reasonerProposal ?? null, audit: modelAudit("reason") };
+    },
     async render() {
       if (options.renderGate) await options.renderGate.promise;
       if (options.rejectedRender || options.reviewThrows) return { copy: { reply: "买就送小样，拆封也能退。", questions: [], factBlockIds: [] }, audit: modelAudit("render") };
@@ -144,5 +152,43 @@ test("semantic review rejection and failure fall back to the local template", as
     assert.equal(result.result.reply.includes("送小样"), false);
     assert.equal(result.result.reply.includes("拆封也能退"), false);
     assert.equal(result.result.state.facts.skinType?.value, "dry");
+  }
+});
+
+test("an unauthorized final reasoner SKU is rejected and the fallback is authorized", async () => {
+  const repo = new MemoryRepository();
+  const choices = [
+    { action: "search_products", arguments: { category: "cleanser" }, evidenceNeeded: "商品", expectedProgress: "获得候选" },
+    { action: "finalize", arguments: {}, evidenceNeeded: "候选", expectedProgress: "进入裁决" },
+  ];
+  const agent = runtime(repo, { plannerActions: choices, reasonerProposal: { kind: "recommend", skus: ["P201"], evidenceIds: ["catalog:P201"], relation: "single" } });
+  const result = (await agent.handleTurn("s", "r1", "我是干皮，预算200，想买洗面奶")).result;
+  assert.equal(result.agentTrace?.reasonerProposal?.kind, "recommend");
+  assert.equal(result.agentTrace?.fallbackReason, "SKU_NOT_AUTHORIZED");
+  assert.equal(result.agentTrace?.authorization, "APPROVED");
+  assert.ok(result.recommendations.every((item) => item.sku !== "P201"));
+});
+
+test("late planner and final reasoner results cannot overwrite a newer safety turn", async () => {
+  for (const blockedStage of ["planner", "reasoner"] as const) {
+    const repo = new MemoryRepository();
+    const gate = deferred();
+    const choices = [
+      { action: "search_products", arguments: { category: "cleanser" }, evidenceNeeded: "商品", expectedProgress: "获得候选" },
+      { action: "finalize", arguments: {}, evidenceNeeded: "候选", expectedProgress: "进入裁决" },
+    ];
+    const agent = runtime(repo, {
+      plannerActions: choices,
+      ...(blockedStage === "planner" ? { plannerGate: gate } : { reasonerGate: gate }),
+      reasonerProposal: { kind: "recommend", skus: ["P101"], evidenceIds: ["catalog:P101"], relation: "single" },
+    });
+    const old = agent.handleTurn("s", "r1", "我是干皮，预算200，想买洗面奶");
+    await until(() => repo.session.appliedInputVersion === 1);
+    const newer = await agent.handleTurn("s", "r2", "现在脸很疼");
+    assert.equal(newer.result.action, "safety");
+    gate.release();
+    assert.equal((await old).stale, true, blockedStage);
+    assert.equal(repo.session.result?.action, "safety");
+    assert.equal(repo.session.state.facts.pain?.value, true);
   }
 });
