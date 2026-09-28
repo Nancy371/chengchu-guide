@@ -135,7 +135,7 @@ function displayValue(value: FactValue, field?: string) {
 }
 
 function RecommendationRows({ result }: { result: DecisionResult }) {
-  if (!result.recommendations.length) return null;
+  if (result.action !== "recommend" || !result.recommendations.length) return null;
   return (
     <div className="recommendation-list" aria-label="推荐商品">
       {result.recommendations.map((item, index) => (
@@ -146,8 +146,8 @@ function RecommendationRows({ result }: { result: DecisionResult }) {
               <span className="sku">{item.sku}</span>
               <h3>{item.name}</h3>
             </div>
-            <p>{item.reasons[0] ?? "符合你现在说的条件"}</p>
-            {item.tradeoffs[0] ? <p className="tradeoff">要留意的是：{item.tradeoffs[0]}</p> : null}
+            <p>{item.facts?.join(" · ") ?? item.reasons[0] ?? "查看商品信息"}</p>
+            {item.sku === "P201" ? <p className="tradeoff">使用时需注意防晒</p> : null}
           </div>
           <strong>¥{item.priceFen / 100}</strong>
         </article>

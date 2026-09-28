@@ -12,6 +12,7 @@ function productRecommendation(sku: string, fit?: ProductFit): Recommendation {
     quantity: 1,
     reasons: fit?.matches.slice(0, 3) ?? product.suitable,
     tradeoffs: [...product.limitations, ...(fit?.tradeoffs ?? [])].slice(0, 3),
+    facts: product.features.slice(0, 2),
   };
 }
 

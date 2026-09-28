@@ -195,6 +195,7 @@ export interface Recommendation {
   quantity: number;
   reasons: string[];
   tradeoffs: string[];
+  facts?: string[];
 }
 
 export interface ModelAudit {

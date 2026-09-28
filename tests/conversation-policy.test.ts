@@ -101,8 +101,34 @@ test("two-product copy explains each option once and comparison cannot smuggle i
   assert.match(recommendedText, /¥169/);
   assert.match(recommendedText, /¥149/);
   assert.equal(recommendedText.includes("两个备选"), false);
+  assert.equal(recommended.factBlocks.length, 1);
+  assert.doesNotMatch(recommendedText, /手册适用提示|资格门禁|候选排序|匹配得分/);
   const compared = planConversation({ draft: { ...decide(state), action: "comparison_only", recommendations: [], candidateSkus: ["P101", "P102"], questionFields: [], totalFen: undefined }, state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
   assert.equal(validateRenderProposal({ acknowledgement: "", blockIds: compared.factBlocks.map((block) => block.id), questions: [], closing: "我主推第一款。" }, compared), null);
+});
+
+test("recommendation copy connects the confirmed need to a product without inventing a scent note", () => {
+  const state = stateFrom("我偏油，喜欢桂花香，想买洗面奶，预算200元");
+  const draft = decide(state);
+  const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
+  const text = renderTemplate(plan, []).reply;
+  assert.equal(draft.action, "recommend");
+  assert.match(text, /你说自己偏油/);
+  assert.match(text, /清洁感较强/);
+  assert.doesNotMatch(text, /桂花香|手册适用提示|资格门禁/);
+  assert.equal(plan.factBlocks.length, 1);
+});
+
+test("a real two-product bundle has one joined explanation and the verified total", () => {
+  const state = stateFrom("我是干皮，想买洁面和保湿，预算450元");
+  const draft = decide(state);
+  const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
+  const text = renderTemplate(plan, []).reply;
+  assert.equal(draft.pricingMode, "bundle");
+  assert.equal(plan.factBlocks.length, 1);
+  assert.match(text, /两件合计 ¥428/);
+  assert.equal((text.match(/P101/g) ?? []).length, 1);
+  assert.equal((text.match(/P202/g) ?? []).length, 1);
 });
 
 test("the renderer cannot inject SKU, prices, promises or extra questions", () => {

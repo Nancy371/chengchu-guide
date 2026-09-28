@@ -142,6 +142,47 @@ function acknowledgedEmotion(signals: TurnSignal[], draft: DecisionDraft): Conve
   return emotion === "worried" || emotion === "frustrated" || emotion === "hesitant" || emotion === "happy" ? emotion : "neutral";
 }
 
+function productAngle(sku: string, state: UserState, alternative = false): string {
+  const skin = fact<string>(state, "skinType");
+  switch (sku) {
+    case "P101":
+      return !alternative && skin === "dry"
+        ? "你说自己偏干，这支无香、低泡，洗后也容易冲净"
+        : "它是无香、低泡的一支，洗后容易冲净";
+    case "P102":
+      return !alternative && skin === "oily"
+        ? "你说自己偏油，这支的清洁感较强，不过它带香味"
+        : "它的清洁感较强，也带香味，取向和无香洁面不同";
+    case "P201":
+      return "这支含 8% 果酸复合成分；有相关使用经验、希望改善粗糙时可以考虑，使用时要注意防晒";
+    case "P202":
+      return !alternative && skin === "dry"
+        ? "你说自己偏干，这支无香，含神经酰胺类保湿成分"
+        : "它是无香的保湿乳，含神经酰胺类保湿成分";
+    case "P203":
+      return !alternative && skin === "oily"
+        ? "你说自己偏油，这支质地清爽，不过带淡香"
+        : "它是质地清爽、带淡香的一支";
+    case "P301":
+      return "你想要出行时带着用的小瓶，这盒有 4 个可重复使用的分装瓶，不是护肤品套装";
+    default:
+      return PRODUCTS_BY_SKU[sku]?.features.join("、") ?? "";
+  }
+}
+
+function recommendationStory(draft: DecisionDraft, state: UserState): string {
+  const [first, second] = draft.recommendations;
+  if (!first) return "";
+  const firstName = productLabel(first.sku, first.name);
+  if (draft.pricingMode === "bundle" && second) {
+    return `你这次想把洁面和保湿一起选好，我会把 ${firstName} 和 ${productLabel(second.sku, second.name)} 放在一组：前者${PRODUCTS_BY_SKU[first.sku].features.join("、")}；后者${PRODUCTS_BY_SKU[second.sku].features.join("、")}。两件合计 ${formatMoney(draft.totalFen ?? first.priceFen + second.priceFen)}，可以按实际需要决定是否一起买。`;
+  }
+  if (draft.pricingMode === "alternatives" && second) {
+    return `我会先看 ${firstName}（${formatMoney(first.priceFen)}）：${productAngle(first.sku, state)}。${productLabel(second.sku, second.name)}（${formatMoney(second.priceFen)}）则是另一种取向：${productAngle(second.sku, state, true)}；如果这点更合你意，可以选它。`;
+  }
+  return `我会先看 ${firstName}（${formatMoney(first.priceFen)}）：${productAngle(first.sku, state)}。`;
+}
+
 function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
   if (draft.action === "safety") return [{ id: "safety", text: "先别继续试新的或刺激性护理；如果疼痛、破损或不适一直没有缓解，建议尽快咨询专业人士。这一轮我先不推荐商品，也不作医疗诊断。" }];
   if (draft.action === "close") return [{ id: "close", text: "好，那这次就先停在这里。什么时候想再看看再来，不急。" }];
@@ -182,26 +223,7 @@ function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
     }),
   ];
   if (draft.action === "recommend") {
-    if (draft.pricingMode === "alternatives") {
-      return draft.recommendations.map((item, index) => {
-        const product = PRODUCTS_BY_SKU[item.sku];
-        const reason = item.reasons[0] ?? product.features.slice(0, 2).join("、");
-        const tradeoff = item.tradeoffs.find((part) => !part.includes("完整名称待核"));
-        return { id: `recommend:${item.sku}`, text: `${index === 0 ? "我会先看" : "另一个选择是"}${productLabel(item.sku, item.name)}（${formatMoney(item.priceFen)}）：${reason}。${tradeoff ? `要留意${tradeoff}。` : ""}` };
-      });
-    }
-    if (draft.pricingMode === "bundle" && draft.recommendations.length === 2) return [
-      ...draft.recommendations.map((item) => ({ id: `bundle:${item.sku}`, text: `${productLabel(item.sku, item.name)}（${formatMoney(item.priceFen)}）：${item.reasons[0] ?? PRODUCTS_BY_SKU[item.sku].features[0]}。` })),
-      { id: "bundle-total", text: `两件合计 ${formatMoney(draft.totalFen ?? 0)}，可以按你实际需要决定是否一起买。` },
-    ];
-    const names = draft.recommendations.map((item) => productLabel(item.sku, item.name)).join("＋");
-    const amount = draft.totalFen ? `，合计 ${formatMoney(draft.totalFen)}` : "";
-    const reason = draft.recommendations.flatMap((item) => item.reasons).slice(0, 2).join("；");
-    const tradeoff = draft.recommendations.flatMap((item) => item.tradeoffs).slice(0, 2).join("；");
-    return [
-      { id: "recommendation", text: `我会先看 ${names}${amount}。${reason || (draft.recommendations[0] ? PRODUCTS_BY_SKU[draft.recommendations[0].sku].features[0] : "")}。` },
-      ...(tradeoff ? [{ id: "tradeoff", text: `要留意：${tradeoff}。` }] : []),
-    ];
+    return [{ id: "recommendation", text: recommendationStory(draft, state) }];
   }
   return [];
 }

@@ -26,7 +26,7 @@ export function parseFinalProposal(raw: unknown): FinalDecisionProposal | null {
 
 function recommendation(fit: ProductFit): Recommendation {
   const product = PRODUCTS_BY_SKU[fit.sku];
-  return { sku: fit.sku, name: product.name, priceFen: product.priceFen, quantity: 1, reasons: fit.matches.slice(0, 3), tradeoffs: [...product.limitations, ...fit.tradeoffs].slice(0, 3) };
+  return { sku: fit.sku, name: product.name, priceFen: product.priceFen, quantity: 1, reasons: fit.matches.slice(0, 3), tradeoffs: [...product.limitations, ...fit.tradeoffs].slice(0, 3), facts: product.features.slice(0, 2) };
 }
 
 export function safetyDecision(state: UserState): DecisionDraft {
