@@ -295,12 +295,27 @@ test("a purchase advances from preference to budget instead of stopping after an
   const agent = runtime(repo);
   const first = (await agent.handleTurn("s", "flow1", "我是油皮，想买洗面奶")).result;
   assert.deepEqual(first.questionFields, ["fragrancePreference"]);
+  assert.equal(first.questionOptions?.some((item) => item.id === "scent-okay"), true);
   const preference = (await agent.handleTurn("s", "flow2", "我喜欢玫瑰香")).result;
   assert.deepEqual(preference.questionFields, ["budget"]);
+  assert.deepEqual(preference.questionOptions?.filter((item) => item.id.startsWith("budget-")).map((item) => item.id), ["budget-150", "budget-200", "budget-unlimited", "budget-decline"]);
   assert.equal(preference.state.facts.fragranceNote?.value, "玫瑰香");
-  const budget = (await agent.handleTurn("s", "flow3", "200")).result;
+  const budget = (await agent.handleTurn("s", "flow3", preference.questionOptions![1].answerText)).result;
   assert.equal(budget.action, "recommend");
   assert.ok(budget.recommendations.length > 0);
+});
+
+test("a safety answer option is verified as a current risk before product selection", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "option-safe1", "皮肤有点不舒服，想买洗面奶")).result;
+  assert.deepEqual(first.questionFields, ["currentDiscomfort"]);
+  const answer = first.questionOptions?.find((item) => item.id === "safety-active");
+  assert.ok(answer);
+  const stopped = (await agent.handleTurn("s", "option-safe2", answer.answerText)).result;
+  assert.equal(stopped.action, "safety");
+  assert.equal(stopped.state.facts.currentDiscomfort?.value, true);
+  assert.deepEqual(stopped.recommendations, []);
 });
 
 test("a bare number answers the pending budget question without losing the known category", async () => {

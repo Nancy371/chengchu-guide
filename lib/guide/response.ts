@@ -1,4 +1,5 @@
 import { planConversation, renderTemplate, type ConversationPlan, type RenderedCopy } from "./conversation";
+import { questionOptions } from "./question-options";
 import type { AgentTrace, DecisionDraft, DecisionResult, DecisionTrace, HabitMemory, LifestyleObservation, ModelAudit, StateField, TurnSignal, UserState } from "./types";
 
 interface ComposeContext {
@@ -42,6 +43,7 @@ export function composeResult(
     ...finalDraft,
     reply: copy.reply,
     questions: copy.questions,
+    ...(finalDraft.action === "clarify" && copy.questions.length ? { questionOptions: questionOptions(finalDraft.questionFields[0], finalDraft.productFits, state) } : {}),
     state,
     audits,
     turnSignals: signals,

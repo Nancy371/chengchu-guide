@@ -239,6 +239,7 @@ export interface DecisionDraft {
 export interface DecisionResult extends DecisionDraft {
   reply: string;
   questions: string[];
+  questionOptions?: QuestionOption[];
   state: UserState;
   audits: ModelAudit[];
   turnSignals: TurnSignal[];
@@ -254,6 +255,12 @@ export interface DecisionResult extends DecisionDraft {
   agentTrace?: AgentTrace;
   clarification?: ClarificationProgress;
   purchaseTask?: PurchaseTask;
+}
+
+export interface QuestionOption {
+  id: string;
+  label: string;
+  answerText: string;
 }
 
 export interface ClarificationProgress {

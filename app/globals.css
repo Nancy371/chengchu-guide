@@ -116,6 +116,11 @@ textarea { caret-color: var(--teal); }
 .assistant-message { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; }
 .advisor-avatar { width: 28px; height: 28px; border-radius: 50% 50% 46% 54%; font-size: 12px; }
 .assistant-content > p { margin: 0; font-size: 15px; line-height: 1.85; color: #183b48; }
+.answer-options { display: flex; flex-wrap: wrap; gap: 8px; margin: 15px 0 2px; }
+.answer-options button { padding: 8px 12px; border: 1px solid #9ac8c0; border-radius: 999px; background: #f5fbf8; color: #17464a; font-size: 12px; line-height: 1.4; cursor: pointer; transition: background .18s ease, border-color .18s ease; }
+.answer-options button:hover:not(:disabled), .answer-options button:focus-visible { background: #e3f3ed; border-color: #3d9b8b; }
+.answer-options button:disabled { opacity: .5; cursor: not-allowed; }
+.answer-options .answer-custom { background: transparent; border-style: dashed; }
 .recommendation-list { margin-top: 18px; border-top: 2px solid var(--ink); }
 .product-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 13px; align-items: start; padding: 17px 0; border-bottom: 1px solid var(--line); }
 .product-index { color: var(--teal); font-family: Georgia, serif; font-size: 11px; }

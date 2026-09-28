@@ -282,6 +282,7 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [serviceError, setServiceError] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const submitRef = useRef<(text: string) => Promise<DecisionResult | null>>(async () => null);
 
   const facts = useMemo(() => Object.entries(latestResult?.state.facts ?? {}).slice(0, 6), [latestResult]);
@@ -420,7 +421,7 @@ export default function Home() {
               </div>
             ) : null}
             {loading ? <div className="loading-line">正在接上刚才的聊天…</div> : null}
-            {history.map((item) => (
+            {history.map((item, index) => (
               <div className="turn" key={item.requestId}>
                 <div className="user-message"><span>你</span><p>{item.text}</p></div>
                 {item.result ? (
@@ -428,6 +429,14 @@ export default function Home() {
                     <div className="advisor-avatar" aria-hidden="true">澄</div>
                     <div className="assistant-content">
                       <p>{item.result.reply}</p>
+                      {index === history.length - 1 && item.result.action === "clarify" && item.result.questionOptions?.length ? (
+                        <div className="answer-options" role="group" aria-label="选择一个回答，也可以自定义输入">
+                          {item.result.questionOptions.map((option) => (
+                            <button type="button" key={option.id} disabled={sending || loading} onClick={() => void submit(option.answerText)}>{option.label}</button>
+                          ))}
+                          <button type="button" className="answer-custom" disabled={sending || loading} onClick={() => inputRef.current?.focus()}>自定义回答</button>
+                        </div>
+                      ) : null}
                       <RecommendationRows result={item.result} />
                       <button className="inline-evidence" onClick={() => setLatestResult(item.result)}>这条建议核对了 {item.result.evidence.length} 条事实与规则 · 看看为什么</button>
                     </div>
@@ -442,7 +451,7 @@ export default function Home() {
           <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
             <label htmlFor="guide-input">接着说</label>
             <div className="composer-row">
-              <Textarea id="guide-input" value={input} maxLength={600} disabled={sending || loading} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); } }} placeholder="比如：我偏干，预算 450 元，更想要无香的…" />
+              <Textarea ref={inputRef} id="guide-input" value={input} maxLength={600} disabled={sending || loading} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); } }} placeholder="也可以直接说你的想法…" />
               <Button type="submit" size="icon" aria-label="发送" disabled={!input.trim() || sending || loading}><ArrowUp /></Button>
             </div>
             <div className="composer-meta"><span>Enter 发送 · Shift + Enter 换行</span><span>{input.length}/600</span></div>
