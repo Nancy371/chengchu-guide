@@ -11,13 +11,19 @@ async function session() {
 }
 
 async function chat(cookie, requestId, text) {
-  const response = await fetch(`${base}/api/chat`, {
-    method: "POST",
-    headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ requestId, text }),
-  });
-  if (response.status !== 200) throw new Error(`${requestId}: ${response.status} ${await response.text()}`);
-  return response.json();
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const response = await fetch(`${base}/api/chat`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ requestId, text }),
+    });
+    if (response.status === 429 && attempt < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 20_000));
+      continue;
+    }
+    if (response.status !== 200) throw new Error(`${requestId}: ${response.status} ${await response.text()}`);
+    return response.json();
+  }
 }
 
 async function reload(cookie) {
@@ -95,12 +101,31 @@ for (const [skin, expected] of [["我是干皮", "dry"], ["我是干性皮肤", 
     assert.deepEqual(answer.result.questionFields, ["skinType"]);
     assert.equal(answer.result.clarification.askedCount, count);
   }
-  const compared = await chat(cookie, "clarify-5", "还可以");
+  const budgetQuestion = await chat(cookie, "clarify-5", "还可以");
+  assert.deepEqual(budgetQuestion.result.questionFields, ["budget"]);
+  assert.ok(budgetQuestion.result.questionOptions.some((option) => option.answerText === "预算200"));
+  const compared = await chat(cookie, "clarify-budget", "200");
   assert.equal(compared.result.action, "comparison_only");
   assert.deepEqual(compared.result.recommendations, []);
   assert.match(compared.result.reply, /¥169/);
   assert.match(compared.result.reply, /¥149/);
   assert.equal(compared.result.totalFen, undefined);
+}
+
+{
+  const cookie = await session();
+  const first = await chat(cookie, "needs-first", "想买洗面奶");
+  assert.deepEqual(first.result.questionFields, ["skinType"]);
+  assert.ok(first.result.questionOptions.some((option) => option.answerText === "我是油皮"));
+  const skin = await chat(cookie, "needs-skin", "我是油皮");
+  assert.deepEqual(skin.result.questionFields, ["fragrancePreference"]);
+  const fragrance = await chat(cookie, "needs-fragrance", "能接受香味");
+  assert.deepEqual(fragrance.result.questionFields, ["budget"]);
+  const priced = await chat(cookie, "needs-budget", "预算200元");
+  assert.equal(priced.result.action, "recommend");
+  assert.match(priced.result.reply, /你说自己偏油/);
+  assert.ok(priced.result.recommendations[0].facts.length);
+  assert.equal(priced.result.recommendations.some((item) => item.priceFen > 20000), false);
 }
 
 {
@@ -115,4 +140,4 @@ for (const [skin, expected] of [["我是干皮", "dry"], ["我是干性皮肤", 
   assert.deepEqual(later.result.questionFields, ["currentDiscomfort"]);
 }
 
-console.log("Local D1 API: skin answers, refresh, sourced safety, category switch, concurrent inputs, idempotent retry, four-round clarification, factual comparison, safety refusal passed");
+console.log("Local D1 API: skin answers, refresh, sourced safety, category switch, concurrent inputs, idempotent retry, need-before-budget options, four-round clarification, factual comparison, safety refusal passed");

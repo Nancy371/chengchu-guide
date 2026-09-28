@@ -1,9 +1,8 @@
 import { activeCategories } from "./tools";
 import { PRODUCTS_BY_SKU } from "./catalog";
-import { decide } from "./decision";
 import { evaluateCandidates, LOW_RISK_FIELDS, MAX_LOW_RISK_QUESTIONS } from "./candidate-evaluation";
 import { fact } from "./state";
-import type { AgentContext, ClarificationProgress, DecisionDraft, ProductFit, PurchaseTask, StateField, UserState } from "./types";
+import type { AgentContext, ClarificationProgress, ProductFit, PurchaseTask, StateField, UserState } from "./types";
 
 export { MAX_LOW_RISK_QUESTIONS, LOW_RISK_FIELDS };
 
@@ -18,8 +17,7 @@ export function clarificationCandidateKey(fits: ReadonlyArray<ProductFit>): stri
   return fits.filter((fit) => fit.status === "eligible" && fit.hardConstraintMatch !== false && fit.budgetStatus !== "over").map((fit) => fit.sku).sort().join("+");
 }
 
-export function requiredInformation(context: AgentContext, baseline: DecisionDraft = decide(context.userState as UserState, [...context.habits.relevant])): StateField[] {
-  void baseline;
+export function requiredInformation(context: AgentContext): StateField[] {
   const field = evaluateCandidates(context).selectedQuestion;
   return field ? [field] : [];
 }
