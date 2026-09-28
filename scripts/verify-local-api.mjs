@@ -83,4 +83,36 @@ for (const [skin, expected] of [["我是干皮", "dry"], ["我是干性皮肤", 
   assert.equal(loaded.session.state.turn, 1);
 }
 
-console.log("Local D1 API: skin answers, refresh, sourced safety, category switch, concurrent inputs, idempotent retry passed");
+{
+  const cookie = await session();
+  const first = await chat(cookie, "clarify-1", "想买洗面奶");
+  assert.deepEqual(first.result.questionFields, ["skinType"]);
+  const price = await chat(cookie, "clarify-price", "P101 多少钱");
+  assert.equal(price.result.action, "price_answer");
+  assert.equal(price.result.clarification.askedCount, 1);
+  for (let count = 2; count <= 4; count++) {
+    const answer = await chat(cookie, `clarify-${count}`, "还可以");
+    assert.deepEqual(answer.result.questionFields, ["skinType"]);
+    assert.equal(answer.result.clarification.askedCount, count);
+  }
+  const compared = await chat(cookie, "clarify-5", "还可以");
+  assert.equal(compared.result.action, "comparison_only");
+  assert.deepEqual(compared.result.recommendations, []);
+  assert.match(compared.result.reply, /¥169/);
+  assert.match(compared.result.reply, /¥149/);
+  assert.equal(compared.result.totalFen, undefined);
+}
+
+{
+  const cookie = await session();
+  const first = await chat(cookie, "safety-1", "皮肤有点不舒服，想买洗面奶");
+  assert.deepEqual(first.result.questionFields, ["currentDiscomfort"]);
+  const refused = await chat(cookie, "safety-2", "不方便说");
+  assert.equal(refused.result.action, "unavailable");
+  assert.deepEqual(refused.result.recommendations, []);
+  assert.deepEqual(refused.result.questions, []);
+  const later = await chat(cookie, "safety-3", "还是想买洗面奶");
+  assert.deepEqual(later.result.questionFields, ["currentDiscomfort"]);
+}
+
+console.log("Local D1 API: skin answers, refresh, sourced safety, category switch, concurrent inputs, idempotent retry, four-round clarification, factual comparison, safety refusal passed");
