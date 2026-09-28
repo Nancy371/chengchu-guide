@@ -3,7 +3,7 @@ import { effectiveStateView, validateUnderstanding } from "./state";
 import { compileReasoningContext } from "./agent-context";
 import { compilePlannerContext } from "./planner";
 import { conversationLanguageRules, validateRenderProposal, type ConversationPlan, type RenderedCopy } from "./conversation";
-import type { AgentContext, ModelAudit, TurnUnderstanding, UserState } from "./types";
+import type { AgentContext, ModelAudit, StateField, TurnUnderstanding, UserState } from "./types";
 
 type Stage = ModelAudit["stage"];
 
@@ -76,12 +76,12 @@ export class DeepSeekModelAdapter {
     }
   }
 
-  async extract(text: string, state: UserState): Promise<{ understanding: TurnUnderstanding | null; proposal: unknown; audit: ModelAudit }> {
+  async extract(text: string, state: UserState, pendingQuestion?: StateField): Promise<{ understanding: TurnUnderstanding | null; proposal: unknown; audit: ModelAudit }> {
     const result = await this.invoke("extract", [
-      { role: "system", content: "你只负责从当前用户消息提取导购状态增量、明确的当轮信号和生活偏好观察。只输出 JSON：{updates:[{field,value,quote,status}],signals:[{kind,value,quote,explicit,subject,temporal}],lifestyle:[{kind,value,quote,scope,explicit,subject}]}。quote 必须逐字来自当前消息。情绪只在用户明确表达时标 explicit=true；temporal 只能是 current、historical、unclear。预算低不代表焦虑，短句不代表生气。识别否定、过去经历、替别人咨询。“算了，还是看保湿吧”这类说法是改变选择，不是拒绝；只有明确停止咨询或暂不购买才标记 reject。不要计算价格、推荐商品或推测未说的信息。可用 signal value：worried,frustrated,hesitant,happy,price_objection,reject,correction,hurry,direct_answer,morning_rush,exercise,travel,simple_routine,existing_routine,sensory_discomfort。可用 lifestyle kind：routine_preference,frequent_travel,fragrance_preference,texture_preference,purchase_preference。" },
-      { role: "user", content: JSON.stringify({ currentState: effectiveStateView(state), currentMessage: text }, null, 2) },
+      { role: "system", content: "你只负责从当前用户消息提取导购状态增量、明确的当轮信号和生活偏好观察。只输出 JSON：{updates:[{field,value,quote,status}],signals:[{kind,value,quote,explicit,subject,temporal}],lifestyle:[{kind,value,quote,scope,explicit,subject}]}。quote 必须逐字来自当前消息。情绪只在用户明确表达时标 explicit=true；temporal 只能是 current、historical、unclear。预算低不代表焦虑，短句不代表生气。识别否定、过去经历、替别人咨询。明确说喜欢桂花香、木质香等，可归纳为能接受香味，但不能推断品牌商品有该香型。若有上一轮提问而用户回答含糊、无法确定所问字段，可输出 communication/answer_ambiguous 信号；不能把‘还可以’直接写成不敏感或皮肤稳定。只有明确停止咨询或暂不购买才标记 reject。不要计算价格、推荐商品或推测未说的信息。可用 signal value：worried,frustrated,hesitant,happy,price_objection,reject,correction,hurry,direct_answer,answer_ambiguous,morning_rush,exercise,travel,simple_routine,existing_routine,sensory_discomfort。可用 lifestyle kind：routine_preference,frequent_travel,fragrance_preference,texture_preference,purchase_preference。" },
+      { role: "user", content: JSON.stringify({ currentState: effectiveStateView(state), pendingQuestion, currentMessage: text }, null, 2) },
     ], 8000, false, true);
-    const understanding = validateUnderstanding(result.value, text);
+    const understanding = validateUnderstanding(result.value, text, pendingQuestion);
     const accepted = understanding !== null;
     return { understanding, proposal: result.value, audit: { ...result.audit, schemaSuccess: accepted, businessAccepted: accepted, used: accepted } };
   }

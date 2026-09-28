@@ -51,7 +51,7 @@ export interface UserState {
 export type SignalKind = "emotion" | "communication" | "lifestyle";
 export type SignalValue =
   | "worried" | "frustrated" | "hesitant" | "happy"
-  | "price_objection" | "reject" | "correction" | "hurry" | "direct_answer"
+  | "price_objection" | "reject" | "correction" | "hurry" | "direct_answer" | "answer_ambiguous"
   | "morning_rush" | "exercise" | "travel" | "simple_routine" | "existing_routine" | "sensory_discomfort";
 
 export interface TurnSignal {

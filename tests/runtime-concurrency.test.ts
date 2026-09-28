@@ -155,6 +155,19 @@ test("semantic review rejection and failure fall back to the local template", as
   }
 });
 
+test("a vague sensitivity answer advances to a concrete follow-up without guessing", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "r1", "想买果酸，用过果酸，现在状态稳定")).result;
+  assert.deepEqual(first.questionFields, ["sensitiveTendency"]);
+  const second = (await agent.handleTurn("s", "r2", "还可以")).result;
+  assert.equal(second.state.facts.sensitiveTendency, undefined);
+  assert.deepEqual(second.questionFields, ["sensitiveTendency"]);
+  assert.equal(second.questions.length, 1);
+  assert.match(second.questions[0], /用新护肤品.*泛红、刺痛/);
+  assert.equal(second.recommendations.length, 0);
+});
+
 test("an unauthorized final reasoner SKU is rejected and the fallback is authorized", async () => {
   const repo = new MemoryRepository();
   const choices = [

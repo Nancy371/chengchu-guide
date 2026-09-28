@@ -135,6 +135,16 @@ test("a previously asked optional field is not immediately repeated", () => {
   assert.deepEqual(plan.policy.selectedQuestionFields, []);
 });
 
+test("a vague answer retries a needed sensitivity question in concrete words", () => {
+  const state = stateFrom("想买果酸，用过果酸，现在状态稳定");
+  const draft = decide(state);
+  const previousResult = { questionFields: ["sensitiveTendency"] } as DecisionResult;
+  const ambiguous = deterministicUnderstand("还可以", "sensitiveTendency");
+  const plan = planConversation({ draft, state, signals: ambiguous.signals, lifestyle: [], memories: [], previousResult, updatedFields: [] });
+  assert.deepEqual(plan.policy.selectedQuestionFields, ["sensitiveTendency"]);
+  assert.match(plan.questionGoals[0].fallback, /用新护肤品.*泛红、刺痛/);
+});
+
 test("a changed product category can reframe a still-critical question", () => {
   const state = stateFrom("想买保湿，步骤越少越好");
   const draft = decide(state);

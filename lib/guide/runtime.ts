@@ -66,7 +66,7 @@ export class ConversationRuntime {
       }
       const startedAt = Date.now();
       const verified = await verifiedState.update({ currentState: predecessor.state, userMessage: text, pendingQuestion: begin.previousResult?.questionFields[0],
-        extract: (message, state) => this.model.extract(message, state) });
+        extract: (message, state, pendingQuestion) => this.model.extract(message, state, pendingQuestion) });
       if (verified.audit.model) audits.push(verified.audit.model);
       understanding = verified.understanding;
       const state = verified.state;
@@ -155,9 +155,9 @@ export class ConversationRuntime {
       });
       let rendered = null;
       let renderFallbackReason: string | undefined;
-      if (plan.policy.nextAction === "safety" || plan.policy.nextAction === "close") {
+      if (plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" || understanding.signals.some((item) => item.value === "answer_ambiguous" && item.subject === "self")) {
         rendered = renderTemplate(plan, understanding.signals);
-        renderFallbackReason = "deterministic_safety_or_close";
+        renderFallbackReason = plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" ? "deterministic_safety_or_close" : "contextual_ambiguity_followup";
       } else {
         const renderResult = await this.model.render(plan, deadlineAt - Date.now());
         if (renderResult.copy) {

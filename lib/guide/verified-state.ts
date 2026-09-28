@@ -2,7 +2,7 @@ import { applyDelta, deterministicUnderstand, mergeUnderstanding, validateUnders
 import type { ModelAudit, StateDelta, TurnUnderstanding, UserState } from "./types";
 
 type ExtractResult = { proposal?: unknown; understanding?: TurnUnderstanding | null; audit: ModelAudit };
-type Extractor = (text: string, state: UserState) => Promise<ExtractResult>;
+type Extractor = (text: string, state: UserState, pendingQuestion?: StateDelta["updates"][number]["field"]) => Promise<ExtractResult>;
 
 export interface VerifiedStateResult {
   state: UserState;
@@ -24,10 +24,10 @@ export const verifiedState = {
     const rejectedProposals: VerifiedStateResult["rejectedProposals"] = [];
     if (args.extract) {
       try {
-        const extraction = await args.extract(args.userMessage, args.currentState);
+        const extraction = await args.extract(args.userMessage, args.currentState, args.pendingQuestion);
         modelAudit = extraction.audit;
         const proposed = extraction.proposal;
-        const validated = proposed === undefined ? extraction.understanding ?? null : validateUnderstanding(proposed, args.userMessage);
+        const validated = proposed === undefined ? extraction.understanding ?? null : validateUnderstanding(proposed, args.userMessage, args.pendingQuestion);
         if (proposed && typeof proposed === "object" && Array.isArray((proposed as { updates?: unknown }).updates)) {
           const accepted = validated?.delta.updates ?? [];
           for (const item of (proposed as { updates: unknown[] }).updates) {

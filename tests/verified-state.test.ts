@@ -99,3 +99,25 @@ test("short skin answers only apply in response to a skin question", async () =>
   assert.equal(fact(unrelated.state, "skinType"), undefined);
   assert.equal(fact(dry.state, "currentDiscomfort"), undefined);
 });
+
+test("a vague answer to the pending sensitivity question remains unconfirmed", async () => {
+  const initial = (await verifiedState.update({ currentState: empty(), userMessage: "想买果酸，用过果酸，现在状态稳定" })).state;
+  const vague = await verifiedState.update({ currentState: initial, userMessage: "还可以", pendingQuestion: "sensitiveTendency", extract: async () => ({ audit, proposal: { updates: [{ field: "sensitiveTendency", value: false, quote: "还可以", status: "confirmed" }], signals: [{ kind: "communication", value: "answer_ambiguous", quote: "还可以", explicit: true, subject: "self", temporal: "current" }], lifestyle: [] } }) });
+  assert.equal(fact(vague.state, "sensitiveTendency"), undefined);
+  assert.equal(vague.understanding.signals.some((item) => item.value === "answer_ambiguous"), true);
+  assert.equal(vague.rejectedProposals.length, 1);
+  const unrelated = await verifiedState.update({ currentState: initial, userMessage: "还可以" });
+  assert.equal(unrelated.understanding.signals.some((item) => item.value === "answer_ambiguous"), false);
+  const clear = await verifiedState.update({ currentState: initial, userMessage: "不敏感", pendingQuestion: "sensitiveTendency" });
+  assert.equal(fact(clear.state, "sensitiveTendency"), false);
+});
+
+test("explicit scent liking can be normalized without inventing a product scent", async () => {
+  const local = await verifiedState.update({ currentState: empty(), userMessage: "我喜欢桂花香" });
+  assert.equal(fact(local.state, "fragrancePreference"), "accepts_fragrance");
+  const semantic = await verifiedState.update({ currentState: empty(), userMessage: "桂花味挺好闻", extract: async () => ({ audit, proposal: { updates: [{ field: "fragrancePreference", value: "accepts_fragrance", quote: "桂花味挺好闻", status: "confirmed" }], signals: [], lifestyle: [] } }) });
+  assert.equal(fact(semantic.state, "fragrancePreference"), "accepts_fragrance");
+  assert.equal(semantic.state.facts.fragrancePreference?.quote, "桂花味挺好闻");
+  const negated = await verifiedState.update({ currentState: empty(), userMessage: "我不喜欢桂花香", extract: async () => ({ audit, proposal: { updates: [{ field: "fragrancePreference", value: "accepts_fragrance", quote: "我不喜欢桂花香", status: "confirmed" }], signals: [], lifestyle: [] } }) });
+  assert.equal(fact(negated.state, "fragrancePreference"), undefined);
+});

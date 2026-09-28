@@ -99,7 +99,7 @@ export function deterministicExtract(text: string): StateDelta {
 
   if (/必须.*无香|一点香味都没有|不要香味|只要无香|只喜欢无香/.test(compact)) updates.push(update("fragrancePreference", "must_be_fragrance_free", raw));
   else if (/对香味敏感|闻不了香|香味敏感/.test(compact)) updates.push(update("fragrancePreference", "fragrance_sensitive", raw));
-  else if (/可以接受香味|能接受香味|喜欢香味|带香.*可以/.test(compact)) updates.push(update("fragrancePreference", "accepts_fragrance", raw));
+  else if (/可以接受香味|能接受香味|喜欢香味|带香.*可以|(?:喜欢|偏爱)[^，。]{0,8}(?:香|香味)/.test(compact) && !/不喜欢|无香|不接受|讨厌|受不了/.test(compact)) updates.push(update("fragrancePreference", "accepts_fragrance", raw));
 
   if (/没用过果酸|第一次用果酸|没有.*果酸.*经验/.test(compact)) updates.push(update("acidExperience", false, raw));
   else if (/用过果酸|果酸.*很多年|有.*焕肤.*经验|有.*果酸.*经验/.test(compact)) updates.push(update("acidExperience", true, raw));
@@ -163,7 +163,7 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if (/(?:经常|常常|总是|每个月|每周).*(?:出差|旅行)|(?:出差|旅行).*(?:经常|常常|总是)/.test(compact)) lifestyle.push({ kind: "frequent_travel", value: true, quote: raw, scope: "durable", explicit: true, subject });
   if (/必须.*无香|不要香味|只要无香|只喜欢无香|不喜欢香味/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "must_be_fragrance_free", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   else if (/对香味敏感|闻不了香|香味敏感/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "fragrance_sensitive", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
-  else if (/喜欢香味|可以接受香味|能接受香味/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "accepts_fragrance", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
+  else if (/喜欢香味|可以接受香味|能接受香味|(?:喜欢|偏爱)[^，。]{0,8}香/.test(compact) && !/不喜欢|无香|不接受|讨厌|受不了/.test(compact)) lifestyle.push({ kind: "fragrance_preference", value: "accepts_fragrance", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   if (/不喜欢黏|讨厌黏|不要黏|喜欢轻薄|喜欢清爽/.test(compact)) lifestyle.push({ kind: "texture_preference", value: "lightweight", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
   if (/不想重复买|避免重复买|已有.*不再买|只想买单品|以后.*单品/.test(compact)) lifestyle.push({ kind: "purchase_preference", value: /单品/.test(compact) ? "single_item" : "avoid_duplicate", quote: raw, scope: historical ? "session" : "durable", explicit: true, subject });
 
@@ -172,6 +172,9 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
     const answer = compact.replace(/[，。！？?!,.]/g, "");
     if (/^(?:我)?(?:是|偏|比较)?干(?:的|皮)?$/.test(answer)) delta.updates.push(update("skinType", "dry", raw));
     else if (/^(?:我)?(?:是|偏|比较)?油(?:的|皮)?$/.test(answer)) delta.updates.push(update("skinType", "oily", raw));
+  }
+  if (pendingQuestion && !delta.updates.some((item) => item.field === pendingQuestion) && /^(?:我)?(?:觉得)?(?:还可以|还行|一般|差不多|说不好|不太确定|看情况)(?:吧|的)?[。！!，,]*$/.test(compact)) {
+    signals.push(signal("communication", "answer_ambiguous", raw, subject));
   }
   return { delta, signals, lifestyle };
 }
@@ -186,7 +189,13 @@ export function validateDelta(delta: unknown, text: string): StateDelta | null {
     const local = deterministicExtract(candidate.quote).updates.find((item) => item.field === candidate.field);
     // Every accepted field needs evidence in the quoted words, including
     // non-safety preferences. Unknown wording stays unconfirmed.
-    if (!local || JSON.stringify(local.value) !== JSON.stringify(candidate.value)) continue;
+    const locallySupported = local && JSON.stringify(local.value) === JSON.stringify(candidate.value);
+    const semanticFragrance = candidate.field === "fragrancePreference" && candidate.value === "accepts_fragrance" &&
+      subjectFor(candidate.quote) === "self" && !/(?:以前|曾经|过去|之前|去年|上次|不喜欢|无香|不接受|讨厌|受不了)/.test(candidate.quote) &&
+      /(?:香|味)/.test(candidate.quote) && /(?:喜欢|偏爱|好闻|能接受|可以接受)/.test(candidate.quote);
+    // A low-risk preference may be semantically normalized from literal user
+    // words. Safety facts still require the stricter local value agreement.
+    if (!locallySupported && !semanticFragrance) continue;
     valid.push({ ...candidate, extractedBy: "model", status: candidate.status === "unclear" ? "unclear" : "confirmed" });
   }
   return { updates: valid, extraction: "model", warnings: [] };
@@ -220,10 +229,10 @@ function validFieldValue(field: StateField, value: unknown): value is FactValue 
 }
 
 const signalKinds = new Set<SignalKind>(["emotion", "communication", "lifestyle"]);
-const signalValues = new Set<SignalValue>(["worried", "frustrated", "hesitant", "happy", "price_objection", "reject", "correction", "hurry", "direct_answer", "morning_rush", "exercise", "travel", "simple_routine", "existing_routine", "sensory_discomfort"]);
+const signalValues = new Set<SignalValue>(["worried", "frustrated", "hesitant", "happy", "price_objection", "reject", "correction", "hurry", "direct_answer", "answer_ambiguous", "morning_rush", "exercise", "travel", "simple_routine", "existing_routine", "sensory_discomfort"]);
 const habitKinds = new Set(["routine_preference", "frequent_travel", "fragrance_preference", "texture_preference", "purchase_preference"]);
 
-export function validateUnderstanding(value: unknown, text: string): TurnUnderstanding | null {
+export function validateUnderstanding(value: unknown, text: string, pendingQuestion?: StateField): TurnUnderstanding | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as { updates?: unknown; signals?: unknown; lifestyle?: unknown };
   const delta = validateDelta({ updates: raw.updates }, text);
@@ -233,6 +242,7 @@ export function validateUnderstanding(value: unknown, text: string): TurnUnderst
     const candidate = item as Partial<TurnSignal>;
     if (!candidate.kind || !signalKinds.has(candidate.kind) || !candidate.value || !signalValues.has(candidate.value) || typeof candidate.quote !== "string" || !candidate.quote || !text.includes(candidate.quote)) return [];
     if (candidate.value === "reject" && !isExplicitRejection(text.replace(/\s+/g, ""))) return [];
+    if (candidate.value === "answer_ambiguous" && (!pendingQuestion || delta.updates.some((update) => update.field === pendingQuestion))) return [];
     return [{ kind: candidate.kind, value: candidate.value, quote: candidate.quote, explicit: candidate.explicit !== false, subject: candidate.subject === "other" ? "other" : candidate.subject === "unknown" ? "unknown" : "self", temporal: candidate.temporal === "historical" ? "historical" : candidate.temporal === "unclear" ? "unclear" : "current" }];
   }) : [];
   const lifestyle = Array.isArray(raw.lifestyle) ? raw.lifestyle.flatMap((item): LifestyleObservation[] => {

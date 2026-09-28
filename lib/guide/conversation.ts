@@ -48,7 +48,17 @@ const questionCopy: Partial<Record<StateField, string>> = {
   coreConcern: "真要做取舍时，你最想保住哪一点：清爽肤感、无香，还是价格？",
 };
 
-function questionFor(field: StateField, state: UserState) {
+function questionFor(field: StateField, state: UserState, clarifyAmbiguity = false) {
+  if (clarifyAmbiguity) {
+    const concrete: Partial<Record<StateField, string>> = {
+      sensitiveTendency: "我换个具体的问法：平时用新护肤品基本没反应，还是偶尔会泛红、刺痛？",
+      currentDiscomfort: "我先确认现在的情况：有没有刺痛、疼痛或破损？",
+      skinType: "我换个更好判断的问法：洗完脸更容易紧绷，还是过一会儿容易出油？",
+      fragrancePreference: "带一点香味你能接受吗，还是希望完全无香？",
+      acidExperience: "之前实际用过果酸或类似焕肤产品吗？",
+    };
+    if (concrete[field]) return concrete[field];
+  }
   if (field !== "skinType") return questionCopy[field] ?? "还差一条会影响选择的信息，你愿意时再告诉我就好。";
   const categories = fact<string[]>(state, "categories") ?? [];
   if (categories.includes("moisturizer")) return "平时皮肤更容易干，还是容易出油？这会影响我在滋润和清爽之间怎么选。";
@@ -201,10 +211,11 @@ export function planConversation(input: {
   const rejected = hasSignal(signals, "reject");
   const effectiveDraft: DecisionDraft = rejected && draft.action !== "safety" ? { ...draft, action: "close", recommendations: [], candidateSkus: [], totalFen: undefined, budgetGapFen: undefined, routeReason: "用户明确表示停止推荐或暂不购买" } : draft;
   const repeated = new Set(previousResult?.questionFields ?? []);
+  const ambiguousAnswer = signals.some((item) => item.value === "answer_ambiguous" && item.subject === "self" && item.temporal !== "historical");
   const decisionContextChanged = (["categories", "targetSku"] as const).some((field) =>
     updatedFields.includes(field) && JSON.stringify(previousResult?.state?.facts?.[field]?.value) !== JSON.stringify(state.facts[field]?.value));
   const selectedQuestionFields = effectiveDraft.action === "clarify"
-    ? effectiveDraft.questionFields.filter((field) => !repeated.has(field) || updatedFields.includes(field) || decisionContextChanged).slice(0, 1)
+    ? effectiveDraft.questionFields.filter((field) => !repeated.has(field) || updatedFields.includes(field) || decisionContextChanged || ambiguousAnswer).slice(0, 1)
     : [];
   const emotion = acknowledgedEmotion(signals, effectiveDraft);
   const behaviorSkills = selectBehaviorSkills(signals, lifestyle, memory, effectiveDraft.action);
@@ -244,7 +255,7 @@ export function planConversation(input: {
         ? [{ id: "skin-type-unconfirmed", text: "我还不能从这句话确认你偏干还是偏油，所以暂时不能按肤质选。你想清楚后直接告诉我就好。" }]
         : []),
     ],
-    questionGoals: selectedQuestionFields.map((field) => ({ field, fallback: questionFor(field, state) })),
+    questionGoals: selectedQuestionFields.map((field) => ({ field, fallback: questionFor(field, state, ambiguousAnswer && repeated.has(field)) })),
   };
 }
 
