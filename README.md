@@ -1,6 +1,6 @@
 # 澄初 AI 金牌导购
 
-可现场试用的个人护理商品导购 Agent。系统使用品牌手册中的六个 SKU、强制商品安全与资格门禁、确定性算价；Planner 选择受控的搜索和比较路径，Final Decision Reasoner 提议商品取舍或必要追问，本地最终授权后才能回复。Conversation Skills 负责情绪承接、节奏适配和生活场景沟通。
+可现场试用的个人护理商品导购 Agent。系统使用品牌手册中的六个 SKU、持续购买任务状态、强制商品安全与资格门禁、确定性算价；Planner 根据完整候选集选择一个必要问题或进入裁决，Final Decision Reasoner 提议商品取舍，本地最终授权后才能回复。Conversation Skills 负责情绪承接、节奏适配和生活场景沟通。
 
 ## 本地运行
 
