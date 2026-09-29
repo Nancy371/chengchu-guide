@@ -87,13 +87,13 @@ function runtime(repo: MemoryRepository, options: { renderGate?: ReturnType<type
   return new ConversationRuntime(repo as unknown as ConstructorParameters<typeof ConversationRuntime>[0], model as unknown as ConstructorParameters<typeof ConversationRuntime>[1]);
 }
 
-test("single-question clarification uses one grounded sentence without a renderer detour", async () => {
+test("single-question clarification can use the renderer and still falls back to one grounded question", async () => {
   const repo = new MemoryRepository();
   let renderCalls = 0;
   const result = await runtime(repo, { onRender: () => { renderCalls++; } }).handleTurn("s", "r1", "想买洗面奶");
   assert.equal(result.result.action, "clarify");
   assert.equal(result.result.render.source, "template");
-  assert.equal(renderCalls, 0);
+  assert.equal(renderCalls, 1);
   assert.equal(result.result.questions.length, 1);
   assert.equal((result.result.reply.match(/[？?]/g) ?? []).length, 1);
 });
@@ -355,11 +355,12 @@ test("declining budget lists related prices without inventing a main recommendat
   await agent.handleTurn("s", "budget2", "偏油");
   const needBudget = (await agent.handleTurn("s", "budget3", "带香可以")).result;
   assert.deepEqual(needBudget.questionFields, ["budget"]);
-  const listed = (await agent.handleTurn("s", "budget4", "预算不想说，别再问了")).result;
+  const listed = (await agent.handleTurn("s", "budget4", "预算还没想好，想先看看价格")).result;
   assert.equal(listed.action, "price_list");
   assert.deepEqual(listed.recommendations, []);
   assert.match(listed.reply, /¥169/);
   assert.match(listed.reply, /¥149/);
+  assert.match(listed.reply, /预算可以晚点再定/);
   assert.equal(listed.purchaseTask?.budget.status, "declined");
 });
 

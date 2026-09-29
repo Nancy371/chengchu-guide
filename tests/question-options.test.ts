@@ -12,9 +12,9 @@ function state(text: string) {
 test("budget choices follow verified catalog price tiers for a single category or bundle", () => {
   const cleanser = state("想买洗面奶");
   const fits = checkEligibility({ skus: ["P101", "P102", "P202", "P203"], userState: cleanser }).fits;
-  assert.deepEqual(questionOptions("budget", fits, cleanser).map((item) => item.label), ["¥150 以内", "¥200 以内", "不限预算", "暂时不说"]);
+  assert.deepEqual(questionOptions("budget", fits, cleanser).map((item) => item.label), ["¥150 以内", "¥200 以内", "不限预算", "还没想好，先看看"]);
   const bundle = state("想配洁面和保湿");
-  assert.deepEqual(questionOptions("budget", fits, bundle).map((item) => item.label), ["¥400 以内", "¥450 以内", "不限预算", "暂时不说"]);
+  assert.deepEqual(questionOptions("budget", fits, bundle).map((item) => item.label), ["¥400 以内", "¥450 以内", "不限预算", "还没想好，先看看"]);
 });
 
 test("every active question field has canonical choices and custom input remains a UI action", () => {

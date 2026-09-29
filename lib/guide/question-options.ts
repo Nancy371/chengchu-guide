@@ -14,7 +14,7 @@ function budgetOptions(fits: readonly ProductFit[], state: UserState): QuestionO
   return [
     ...tiers.map((amount) => option(`budget-${amount}`, `¥${amount} 以内`, `预算${amount}`)),
     option("budget-unlimited", "不限预算", "不限预算"),
-    option("budget-decline", "暂时不说", "预算不想说，别再问了"),
+    option("budget-decline", "还没想好，先看看", "预算还没想好，想先看看价格"),
   ];
 }
 

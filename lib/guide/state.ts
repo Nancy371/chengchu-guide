@@ -178,7 +178,7 @@ function isExplicitRejection(text: string) {
 export function classifyPurchaseAction(text: string, pendingQuestion?: StateField): PurchaseTurnAction {
   const compact = text.replace(/\s+/g, "");
   if (/不要了|不买了|别推荐|不用推荐|不想买|先不买/.test(compact)) return { kind: "end", quote: text };
-  if (/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(compact)) return { kind: "decline_answer", quote: text };
+  if (/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(compact) || (pendingQuestion === "budget" && /还没想好|先看看|先看(?:看)?价格|暂时没想预算/.test(compact))) return { kind: "decline_answer", quote: text };
   if (/还有(?:其他|别的).*(?:推荐|选择|款)|(?:换|看)(?:一个|一款|别的)|别的呢|其他呢|不要这款/.test(compact)) return { kind: "request_alternative", quote: text };
   if (/礼盒/.test(compact) && !/赠品/.test(compact)) return { kind: "switch_goal", quote: text };
   if (/想买|只买|改成|改看|换成|还是看|要一套|给我选/.test(compact) && /洗面奶|洁面|保湿|面霜|乳液|凝露|精华|果酸|分装|旅行/.test(compact)) return { kind: "switch_goal", quote: text };
@@ -202,7 +202,7 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if (/太好了|正合适|很开心|就要这个/.test(compact)) signals.push(signal("emotion", "happy", raw, subject, true, historicalEmotion ? "historical" : "current"));
   if (/(?:网上|线上|淘宝|京东|拼多多).*(?:便宜|低)|为什么.*贵|差价/.test(compact)) signals.push(signal("communication", "price_objection", raw, subject));
   if (isExplicitRejection(compact)) signals.push(signal("communication", "reject", raw, subject));
-  if (/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(compact) && !isExplicitRejection(compact)) signals.push(signal("communication", "decline_answer", raw, subject));
+  if ((/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(compact) || (pendingQuestion === "budget" && /还没想好|先看看|先看(?:看)?价格|暂时没想预算/.test(compact))) && !isExplicitRejection(compact)) signals.push(signal("communication", "decline_answer", raw, subject));
   if (/你理解错|不是这个意思|我说错了|改成|改为|其实是|算了.*还是/.test(compact)) signals.push(signal("communication", "correction", raw, subject));
   if (/赶时间|快一点|直接说|先说结论|别问太多/.test(compact)) signals.push(signal("communication", "hurry", raw, subject));
   if (/直接推荐|直接告诉我|给个结论/.test(compact)) signals.push(signal("communication", "direct_answer", raw, subject));
@@ -313,7 +313,7 @@ export function validateUnderstanding(value: unknown, text: string, pendingQuest
     const candidate = item as Partial<TurnSignal>;
     if (!candidate.kind || !signalKinds.has(candidate.kind) || !candidate.value || !signalValues.has(candidate.value) || typeof candidate.quote !== "string" || !candidate.quote || !text.includes(candidate.quote)) return [];
     if (candidate.value === "reject" && !isExplicitRejection(text.replace(/\s+/g, ""))) return [];
-    if (candidate.value === "decline_answer" && !/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(text.replace(/\s+/g, ""))) return [];
+    if (candidate.value === "decline_answer" && !/不想回答|不愿意回答|不方便说|不想说|别再问|别问了|还没想好|先看看|先看(?:看)?价格|暂时没想预算/.test(text.replace(/\s+/g, ""))) return [];
     if (candidate.value === "answer_ambiguous" && (!pendingQuestion || delta.updates.some((update) => update.field === pendingQuestion))) return [];
     return [{ kind: candidate.kind, value: candidate.value, quote: candidate.quote, explicit: candidate.explicit !== false, subject: candidate.subject === "other" ? "other" : candidate.subject === "unknown" ? "unknown" : "self", temporal: candidate.temporal === "historical" ? "historical" : candidate.temporal === "unclear" ? "unclear" : "current" }];
   }) : [];

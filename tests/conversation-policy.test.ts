@@ -38,7 +38,7 @@ test("explicit frustration is acknowledged before narrowing the task", () => {
   assert.equal(plan.policy.userEmotion, "frustrated");
   assert.equal(plan.policy.behaviorSkills.includes("emotion_acknowledgement"), true);
   const reply = renderTemplate(plan, understanding.signals).reply;
-  assert.match(reply, /耗神|范围收小/);
+  assert.match(reply, /挺累|范围收小/);
   assert.doesNotMatch(reply, /根据您的需求|请问您|为了更好地|我理解你的心情/);
   assert.equal(plan.policy.selectedQuestionFields.length <= 1, true);
 });
@@ -65,7 +65,7 @@ test("‘算了，还是看保湿’ changes direction instead of closing the co
   assert.notEqual(plan.policy.nextAction, "close");
   assert.equal(understanding.signals.some((item) => item.value === "reject"), false);
   assert.equal(understanding.signals.some((item) => item.value === "correction"), true);
-  assert.match(renderTemplate(plan, understanding.signals).reply, /滋润和清爽/);
+  assert.match(renderTemplate(plan, understanding.signals).reply, /先看保湿/);
   assert.doesNotMatch(renderTemplate(plan, understanding.signals).reply, /影响洁面的选择/);
 });
 
@@ -202,6 +202,46 @@ test("a changed product category can reframe a still-critical question", () => {
   const previousResult = { questionFields: ["skinType"] } as DecisionResult;
   const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], previousResult, updatedFields: ["categories"] });
   assert.deepEqual(plan.policy.selectedQuestionFields, ["skinType"]);
+});
+
+test("a confirmed budget is acknowledged before the next single question", () => {
+  const understanding = deterministicUnderstand("预算200，想买洗面奶");
+  const state = applyDelta({ facts: {}, history: [], turn: 0 } as UserState, understanding.delta);
+  const plan = planConversation({
+    draft: decide(state),
+    state,
+    signals: understanding.signals,
+    lifestyle: understanding.lifestyle,
+    memories: [],
+    updatedFields: understanding.delta.updates.map((item) => item.field),
+  });
+  const reply = renderTemplate(plan, []).reply;
+  assert.match(reply, /^好，先按 200 元看。/);
+  assert.match(reply, /紧绷.*出油呢？/);
+  assert.equal((reply.match(/[？?]/g) ?? []).length, 1);
+  assert.equal(plan.turnContext.confirmedAnswer?.field, "budget");
+  assert.equal(plan.turnContext.nextQuestionGoal?.field, "skinType");
+});
+
+test("a rendered follow-up must acknowledge the confirmed answer and ask only the selected question", () => {
+  const firstState = stateFrom("想买洗面奶");
+  const previousResult = { questionFields: ["skinType"], questions: ["洗完脸后，你更容易觉得紧绷，还是过一会儿会出油呢？"] } as DecisionResult;
+  const understanding = deterministicUnderstand("偏油", "skinType");
+  const state = applyDelta(firstState, understanding.delta);
+  const plan = planConversation({ draft: decide(state), state, signals: [], lifestyle: [], memories: [], previousResult, updatedFields: ["skinType"] });
+  const field = plan.policy.selectedQuestionFields[0];
+  assert.equal(validateRenderProposal({
+    acknowledgement: "好，平时更容易出油这点我记下了。",
+    blockIds: [],
+    questions: [{ field, text: "带一点香味你能接受，还是更想要无香的呢？" }],
+    closing: "",
+  }, plan)?.questions.length, 1);
+  assert.equal(validateRenderProposal({
+    acknowledgement: "好，我们继续。",
+    blockIds: [],
+    questions: [{ field, text: "带一点香味你能接受，还是更想要无香的呢？" }],
+    closing: "",
+  }, plan), null);
 });
 
 test("durable habits are explicit, self-owned, and do not include temporary travel", () => {
