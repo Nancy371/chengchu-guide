@@ -93,13 +93,13 @@ export function PreferencesDrawer() {
       <SheetContent className="preferences-sheet sm:max-w-[480px]">
         <SheetHeader className="preferences-header">
           <SheetTitle>我的偏好</SheetTitle>
-          <SheetDescription>登录后，可以在不同设备沿用你明确保存的习惯。商品、安全和预算仍以这次聊天为准。</SheetDescription>
+          <SheetDescription>登录后，可以在不同设备沿用你愿意保存的习惯。商品、安全和预算仍以这次聊天为准。</SheetDescription>
         </SheetHeader>
         <div className="preferences-body">
           {!profile.authenticated ? (
             <div className="signin-panel">
-              <h3>登录后才能跨设备记住习惯</h3>
-              <p>不登录也能正常咨询。登录以后，记忆也不会自动开启。</p>
+              <h3>登录后，换设备也能沿用偏好</h3>
+              <p>不登录也能正常聊。登录后，记忆仍由你自己决定要不要开启。</p>
               <Button asChild><a href="/signin-with-chatgpt?return_to=%2F" target="_top"><LogIn aria-hidden="true" /> 使用 ChatGPT 登录</a></Button>
             </div>
           ) : (
@@ -111,7 +111,7 @@ export function PreferencesDrawer() {
               <div className="memory-consent">
                 <div>
                   <strong>在不同设备记住我的习惯</strong>
-                  <p>开启后，只保存你之后明确说出的允许项，90 天后自动过期。情绪、不适、病史、预算和行程都不会保存。</p>
+                  <p>开启后，只保存你之后明确说过的偏好，90 天后自动过期。情绪、不适、病史、预算和具体行程都不会保存。</p>
                 </div>
                 <Switch
                   aria-label="在不同设备记住我的习惯"
@@ -134,11 +134,11 @@ export function PreferencesDrawer() {
                       </Select>
                       <Button size="icon" variant="ghost" aria-label={"删除" + kindLabels[memory.kind]} disabled={busy} onClick={() => void mutate("DELETE", { id: memory.id })}><Trash2 /></Button>
                     </div>
-                  )) : <p className="memory-empty">还没有保存的偏好。开启后，只有你明确说出“我喜欢无香”或“我经常出差”这类习惯时，我才会记下来。</p>}
+                  )) : <p className="memory-empty">这里还没有内容。以后你明确说“我喜欢无香”或“我经常出差”这类习惯时，我才会记下来。</p>}
                   <button className="disable-memory" disabled={busy} onClick={() => void mutate("DELETE", { disable: true, expectedVersion: profile.version })}>关闭并清除记忆</button>
                 </div>
               ) : (
-                <p className="memory-off">记忆现在是关着的。你提到的生活偏好只会用于这次聊天。</p>
+                <p className="memory-off">记忆现在关着。你提到的生活偏好只会用在这次聊天里。</p>
               )}
             </>
           )}
