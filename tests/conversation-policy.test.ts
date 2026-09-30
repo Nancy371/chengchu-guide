@@ -313,3 +313,15 @@ test("recommendation framing varies across turns without changing facts", () => 
     assert.match(reply, /无香/);
   }
 });
+
+test("an uncertain skin answer teaches how to tell oily from dry before asking again", () => {
+  const state = stateFrom("想买洗面奶");
+  const draft: DecisionDraft = { action: "clarify", route: "direct", routeReason: "确认肤质", questionFields: ["skinType"], candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: [] };
+  const previousResult = { questionFields: ["skinType"] } as DecisionResult;
+  const ambiguous = deterministicUnderstand("不确定", "skinType");
+  assert.equal(ambiguous.signals.some((item) => item.value === "answer_ambiguous" && item.subject === "self"), true);
+  const plan = planConversation({ draft, state, signals: ambiguous.signals, lifestyle: [], memories: [], previousResult, updatedFields: [] });
+  assert.equal(plan.policy.selectedQuestionFields[0], "skinType");
+  assert.equal(plan.factBlocks.some((block) => block.id === "hint:skinType"), true);
+  assert.match(renderTemplate(plan, ambiguous.signals).reply, /油皮和干皮/);
+});

@@ -58,15 +58,23 @@ export interface RenderedCopy {
 
 const questionCopy: Partial<Record<DecisionQuestionField, string>> = {
   categories: "这次想先看哪一类：洁面、保湿、精华，还是旅行分装呢？",
-  budget: "最后再确认一下，这次大概想控制在多少呢？不限预算也可以。",
+  budget: "这次大概想控制在多少呢？没有上限也可以。",
   giftBoxType: "你想找旅行分装瓶礼盒，还是装护肤品的套装礼盒呢？",
   fragrancePreference: "带一点香味你能接受，还是更想要无香的呢？",
-  currentDiscomfort: "先确认一下：现在还有刺痛、疼痛或破损吗？",
+  currentDiscomfort: "现在还有刺痛、疼痛或破损吗？",
   sensitiveTendency: "平时用新护肤品，皮肤容易泛红或刺痛吗？",
   acidExperience: "之前用过果酸或类似的焕肤产品吗？",
   coreConcern: "真要取舍的话，你更想保住清爽肤感、无香，还是价格呢？",
   rejectionReason: "主要是哪一点不合适：价格、香味或洗感，还是想换个方向呢？",
   selectionChoice: "两款里你更想定哪一款呢？",
+};
+
+const distinctionHints: Partial<Record<DecisionQuestionField, { text: string; keyTerms: string[] }>> = {
+  skinType: { text: "油皮和干皮主要看两点：洗完脸很快就紧绷、平时也不怎么出油，通常偏干；洗完没多久就泛油光、到下午容易脱妆，通常偏油。", keyTerms: ["紧绷", "出油"] },
+  acidExperience: { text: "果酸是一种常见的焕肤成分，主要帮忙加快老废角质代谢、改善粗糙暗沉；皮肤正在刺痛、破损或敏感时不建议用，用的时候也要注意防晒。", keyTerms: ["果酸"] },
+  sensitiveTendency: { text: "是否敏感可以看对新护肤品的反应：换新的之后容易泛红、刺痛或发痒，通常算偏敏感。", keyTerms: ["泛红"] },
+  fragrancePreference: { text: "无香是配方里不额外加香精，香味敏感或喜欢清爽的人常选它；带香则一般有清淡香调。", keyTerms: ["无香"] },
+  texturePreference: { text: "质地清爽的通常涂上更轻薄、吸收快；偏滋润的会更保湿、有一点存在感。", keyTerms: ["清爽"] },
 };
 
 function questionFor(field: DecisionQuestionField, state: UserState, attempt = 1) {
@@ -499,6 +507,10 @@ export function planConversation(input: {
     acknowledgedSignal: firstEmotion(signals) ?? signals.find((item) => item.explicit && item.subject !== "other" && item.temporal !== "historical" && ["price_objection", "correction", "hurry", "simple_routine", "existing_routine"].includes(item.value)),
     usedMemory: memory ? { id: memory.id, kind: memory.kind, value: memory.value } : undefined,
   };
+  const uncertainField = selectedQuestionFields[0];
+  const uncertainSelf = signals.some((item) => item.value === "answer_ambiguous" && item.subject === "self");
+  const hint = uncertainSelf && uncertainField ? distinctionHints[uncertainField] : undefined;
+  const hintBlocks = hint ? [{ id: `hint:${uncertainField}`, text: hint.text, spec: { locked: false, requiredLiterals: [], requiredTerms: hint.keyTerms, forbidden: [] } }] : [];
   const questionGoals = selectedQuestionFields.map((field) => ({ field, fallback: questionFor(field, state, questionAttempt ?? (previousResult?.questionFields.includes(field) ? 2 : 1)) }));
   const confirmedAnswer = confirmedAnswerFor(state, updatedFields, previousResult);
   const turnAction = state.purchaseTask?.turnAction.kind;
@@ -515,6 +527,7 @@ export function planConversation(input: {
     policy,
     factBlocks: [
       ...factsFor(effectiveDraft, state),
+      ...hintBlocks,
     ],
     questionGoals,
     turnContext: {

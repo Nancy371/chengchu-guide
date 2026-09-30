@@ -271,7 +271,7 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if ((pendingQuestion === "fragrancePreference" || pendingQuestion === "texturePreference") && !delta.updates.some((item) => item.field === pendingQuestion) && /^(?:我)?(?:都可以|无所谓|随便|都行)(?:吧|的)?[。！!，,]*$/.test(compact)) {
     delta.updates.push(update(pendingQuestion, "no_preference", raw));
   }
-  if (pendingQuestion && !delta.updates.some((item) => item.field === pendingQuestion) && /^(?:我)?(?:觉得)?(?:还可以|还行|一般|差不多|说不好|不太确定|看情况)(?:吧|的)?[。！!，,]*$/.test(compact)) {
+  if (pendingQuestion && !delta.updates.some((item) => item.field === pendingQuestion) && /^(?:我)?(?:觉得)?(?:还可以|还行|一般|差不多|说不好|说不清|不太确定|不确定|不清楚|不知道|没概念|分不清|看情况)(?:吧|的)?[。！!，,]*$/.test(compact)) {
     signals.push(signal("communication", "answer_ambiguous", raw, subject));
   }
   const skuMentions = classifySkuMentions(raw);
