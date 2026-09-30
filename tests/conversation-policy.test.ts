@@ -269,7 +269,7 @@ test("durable habits are explicit, self-owned, and do not include temporary trav
   assert.equal(temporary.lifestyle.some((item) => item.kind === "frequent_travel"), false);
 });
 
-test("an expanded recommendation block keeps SKU, price and verified feature terms", () => {
+test("an expanded recommendation block keeps SKU and price, allows feature synonyms, and rejects unsafe additions", () => {
   const state = stateFrom("我是油皮，想买洗面奶，必须无香");
   const draft = decide(state);
   const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
@@ -278,13 +278,11 @@ test("an expanded recommendation block keeps SKU, price and verified feature ter
   const block = plan.factBlocks[0];
   assert.equal(block.spec.locked, false);
   const [sku, price] = block.spec.requiredLiterals;
-  const terms = block.spec.requiredTerms.join("、");
   const base = { acknowledgement: "好，方向已经清楚了。", blockIds: [block.id], questions: [], closing: "" };
-  const good = { ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，${terms}，手册标价 ${price}。` }] };
-  assert.ok(validateRenderProposal(good, plan));
-  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，手册标价 ${price}。` }] }, plan), null);
-  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，${terms}，手册标价 ¥1。` }] }, plan), null);
-  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，${terms}，手册标价 ${price}，保证有效。` }] }, plan), null);
+  assert.ok(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，没什么香味、泡沫也少，手册标价 ${price}。` }] }, plan));
+  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，没什么香味、泡沫也少，手册标价 ¥1。` }] }, plan), null);
+  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，没什么香味、泡沫也少，手册标价 ${price}，保证有效。` }] }, plan), null);
+  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，也看 P102，手册标价 ${price}。` }] }, plan), null);
 });
 
 test("a locked fact block must be reproduced verbatim", () => {

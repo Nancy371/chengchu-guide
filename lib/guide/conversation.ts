@@ -102,13 +102,13 @@ function productLabel(sku: string, name: string) {
   return name.startsWith(`${sku} `) ? name : `${sku} ${name}`;
 }
 
-const PRODUCT_TERM_SPECS: Record<string, { required: string[]; forbidden: string[] }> = {
-  P101: { required: ["无香", "低泡"], forbidden: ["香味", "淡香", "带香", "泡沫"] },
-  P102: { required: ["清洁感", "香味"], forbidden: ["无香", "低泡"] },
-  P201: { required: ["果酸", "8%"], forbidden: [] },
-  P202: { required: ["无香", "神经酰胺"], forbidden: ["香味", "淡香", "带香"] },
-  P203: { required: ["清爽", "淡香"], forbidden: ["无香"] },
-  P301: { required: ["分装瓶"], forbidden: [] },
+const PRODUCT_TERM_SPECS: Record<string, { literal: string[]; terms: string[]; forbidden: string[] }> = {
+  P101: { literal: [], terms: ["无香", "低泡"], forbidden: ["带香", "香味", "淡香", "泡沫丰富", "泡沫多"] },
+  P102: { literal: [], terms: ["清洁感", "香味"], forbidden: ["无香", "低泡"] },
+  P201: { literal: ["8%"], terms: ["果酸"], forbidden: [] },
+  P202: { literal: [], terms: ["无香", "神经酰胺"], forbidden: ["带香", "香味", "淡香"] },
+  P203: { literal: [], terms: ["清爽", "淡香"], forbidden: ["无香"] },
+  P301: { literal: [], terms: ["分装瓶"], forbidden: [] },
 };
 
 const unsafeClaimPattern = /保证|一定有效|治愈|治疗|绝对不过敏|马上见效|闭眼入|必须买|抓紧|最后机会|我也用|我买过|(?:送|赠)(?:小样|礼品|赠品|东西)|赠品|退货|退款|换货|退换|拆封|包邮|正品|授权|淡斑|美白|抗老|祛痘|改善皱纹|手机号|电话|联系方式|地址|收货/;
@@ -152,7 +152,7 @@ const actionTopics: Record<string, RegExp> = {
 };
 
 function productTermSpec(sku: string) {
-  return PRODUCT_TERM_SPECS[sku] ?? { required: [], forbidden: [] };
+  return PRODUCT_TERM_SPECS[sku] ?? { literal: [], terms: [], forbidden: [] };
 }
 
 function lockedSpec(): FactSpec {
@@ -163,12 +163,12 @@ function recommendSpec(draft: DecisionDraft): FactSpec {
   const item = draft.recommendations[0];
   if (!item || draft.recommendations.length !== 1) return lockedSpec();
   const termSpec = productTermSpec(item.sku);
-  return { locked: false, requiredLiterals: [item.sku, formatMoney(item.priceFen)], requiredTerms: termSpec.required, forbidden: termSpec.forbidden };
+  return { locked: false, requiredLiterals: [item.sku, formatMoney(item.priceFen), ...termSpec.literal], requiredTerms: termSpec.terms, forbidden: termSpec.forbidden };
 }
 
 function explainSpec(sku: string): FactSpec {
   const termSpec = productTermSpec(sku);
-  return { locked: false, requiredLiterals: [sku], requiredTerms: termSpec.required, forbidden: termSpec.forbidden };
+  return { locked: false, requiredLiterals: [sku, ...termSpec.literal], requiredTerms: termSpec.terms, forbidden: termSpec.forbidden };
 }
 
 function prohibitedUnsafeText(text: string) {
@@ -187,7 +187,6 @@ function factBlockValid(text: string, original: FactBlock) {
   const spec = original.spec;
   if (prohibitedClaims(text)) return false;
   if (spec.requiredLiterals.some((literal) => !text.includes(literal))) return false;
-  if (spec.requiredTerms.some((term) => !text.includes(term))) return false;
   const originalSkus = new Set(original.text.match(/P[123]\d{2}/g) ?? []);
   const skus = text.match(/P[123]\d{2}/g) ?? [];
   if (skus.some((sku) => !originalSkus.has(sku))) return false;
