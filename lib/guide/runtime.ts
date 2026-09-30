@@ -249,9 +249,9 @@ export class ConversationRuntime {
       let rendered = null;
       let renderFallbackReason: string | undefined;
       const safetyClarification = plan.policy.nextAction === "clarify" && plan.policy.selectedQuestionFields[0] === "currentDiscomfort";
-      if (plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" || safetyClarification || understanding.signals.some((item) => item.value === "answer_ambiguous" && item.subject === "self")) {
+      if (plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" || safetyClarification) {
         rendered = renderTemplate(plan, understanding.signals);
-        renderFallbackReason = plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" ? "deterministic_safety_or_close" : safetyClarification ? "deterministic_safety_clarification" : "contextual_ambiguity_followup";
+        renderFallbackReason = plan.policy.nextAction === "safety" || plan.policy.nextAction === "close" ? "deterministic_safety_or_close" : "deterministic_safety_clarification";
       } else {
         const renderResult = await this.model.render(plan, deadlineAt - Date.now());
         if (renderResult.copy) {

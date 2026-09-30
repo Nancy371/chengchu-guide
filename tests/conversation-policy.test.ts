@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { planConversation, renderTemplate, validateRenderProposal } from "../lib/guide/conversation";
 import { decide } from "../lib/guide/decision";
+import { rebuildPurchaseTask } from "../lib/guide/purchase-task";
 import { applyDelta, deterministicExtract, deterministicUnderstand, fact } from "../lib/guide/state";
-import type { DecisionResult, HabitMemory, UserState } from "../lib/guide/types";
+import type { DecisionDraft, DecisionResult, HabitMemory, UserState } from "../lib/guide/types";
 
 function stateFrom(...turns: string[]): UserState {
   return turns.reduce((state, text) => applyDelta(state, deterministicExtract(text)), { facts: {}, history: [], turn: 0 } as UserState);
@@ -244,6 +245,21 @@ test("a rendered follow-up must acknowledge the confirmed answer and ask only th
   }, plan), null);
 });
 
+test("a rejection acknowledgement cannot pretend the same SKU was replaced", () => {
+  const base = stateFrom("预算200，我是油皮，想买洗面奶");
+  const task = { ...rebuildPurchaseTask(base), decisionStage: "recommended" as const, currentRecommendation: { primarySku: "P102", alternativeSkus: [], inputVersion: 1 }, turnAction: { kind: "reject_current" as const, quote: "不合适" } };
+  const state = { ...base, purchaseTask: task };
+  const draft: DecisionDraft = { action: "clarify", route: "direct", routeReason: "确认否定原因", questionFields: ["rejectionReason"], candidateSkus: [], recommendations: [], productFits: [], evidence: [], limitations: [] };
+  const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
+  assert.match(renderTemplate(plan, []).reply, /^好，这款先排除。/);
+  assert.equal(validateRenderProposal({
+    acknowledgement: "好，给你换一支更温和的。",
+    blockIds: [],
+    questions: [{ field: "rejectionReason", text: "主要是价格、香味或洗感，还是想换个方向呢？" }],
+    closing: "",
+  }, plan), null);
+});
+
 test("durable habits are explicit, self-owned, and do not include temporary travel", () => {
   const own = deterministicUnderstand("我经常出差，而且一直喜欢轻薄不黏的质地");
   assert.equal(own.lifestyle.some((item) => item.kind === "frequent_travel" && item.scope === "durable" && item.subject === "self"), true);
@@ -251,4 +267,51 @@ test("durable habits are explicit, self-owned, and do not include temporary trav
   assert.equal(other.lifestyle.every((item) => item.subject === "other"), true);
   const temporary = deterministicUnderstand("我这周要旅行");
   assert.equal(temporary.lifestyle.some((item) => item.kind === "frequent_travel"), false);
+});
+
+test("an expanded recommendation block keeps SKU, price and verified feature terms", () => {
+  const state = stateFrom("我是油皮，想买洗面奶，必须无香");
+  const draft = decide(state);
+  const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
+  assert.equal(draft.action, "recommend");
+  assert.equal(plan.factBlocks.length, 1);
+  const block = plan.factBlocks[0];
+  assert.equal(block.spec.locked, false);
+  const [sku, price] = block.spec.requiredLiterals;
+  const terms = block.spec.requiredTerms.join("、");
+  const base = { acknowledgement: "好，方向已经清楚了。", blockIds: [block.id], questions: [], closing: "" };
+  const good = { ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，${terms}，手册标价 ${price}。` }] };
+  assert.ok(validateRenderProposal(good, plan));
+  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，手册标价 ${price}。` }] }, plan), null);
+  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，${terms}，手册标价 ¥1。` }] }, plan), null);
+  assert.equal(validateRenderProposal({ ...base, factBlocks: [{ id: block.id, text: `先看这款 ${sku}，${terms}，手册标价 ${price}，保证有效。` }] }, plan), null);
+});
+
+test("a locked fact block must be reproduced verbatim", () => {
+  const state = stateFrom("预算大概 100，想买洗面奶");
+  const draft = decide(state);
+  const plan = planConversation({ draft, state, signals: [], lifestyle: [], memories: [], updatedFields: [] });
+  assert.equal(draft.action, "budget_conflict");
+  const block = plan.factBlocks[0];
+  assert.equal(block.spec.locked, true);
+  assert.equal(validateRenderProposal({
+    acknowledgement: "好，按你的预算看。",
+    blockIds: [block.id],
+    factBlocks: [{ id: block.id, text: "这里改写一下。" }],
+    questions: [],
+    closing: "",
+  }, plan), null);
+});
+
+test("recommendation framing varies across turns without changing facts", () => {
+  const base = stateFrom("我是油皮，想买洗面奶，必须无香");
+  const draft = decide(base);
+  const a = renderTemplate(planConversation({ draft, state: base, signals: [], lifestyle: [], memories: [], updatedFields: [] }), []).reply;
+  const b = renderTemplate(planConversation({ draft, state: { ...base, turn: 3 }, signals: [], lifestyle: [], memories: [], updatedFields: [] }), []).reply;
+  assert.notEqual(a, b);
+  for (const reply of [a, b]) {
+    assert.match(reply, /P101/);
+    assert.match(reply, /¥169/);
+    assert.match(reply, /无香/);
+  }
 });

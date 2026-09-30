@@ -26,7 +26,13 @@ export function questionOptions(field: DecisionQuestionField | undefined, fits: 
     option("reject-sensory", "香味或洗感", "主要是香味或洗感不合适"),
     option("reject-direction", "想换个方向", "想换个方向"),
   ];
-  if (field === "selectionChoice") return [];
+  if (field === "selectionChoice") {
+    const recommendation = state.purchaseTask?.currentRecommendation;
+    return recommendation ? [recommendation.primarySku, ...recommendation.alternativeSkus].flatMap((sku) => {
+      const product = PRODUCTS_BY_SKU[sku];
+      return product ? [option(`select-${sku}`, product.name, `就选 ${sku}`)] : [];
+    }) : [];
+  }
   const options: Partial<Record<StateField, QuestionOption[]>> = {
     categories: [
       option("category-cleanser", "洁面", "想买洗面奶"),

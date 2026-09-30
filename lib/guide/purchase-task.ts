@@ -130,11 +130,14 @@ export function transitionPurchaseTask(input: { previous?: PurchaseTask; previou
     const reason = rejectionReason(input.userMessage);
     for (const sku of targets) rejectedNow.push({ sku, quote: action.quote, reason, turn: input.currentState.turn });
     if (targets.length) {
-      decisionStage = "clarifying_rejection";
       clearCurrentRecommendation = true;
       if (reason === "unknown") {
+        decisionStage = "clarifying_rejection";
         pendingTaskQuestion = { field: "rejectionReason", reason: "确认哪一点不合适，避免按同一方向继续推荐", sku: targets[0] };
         nextRequiredAction = "clarify_rejection_reason";
+      } else {
+        decisionStage = "discovering";
+        pendingTaskQuestion = undefined;
       }
     }
   } else if (!changedGoal && action.kind === "accept_current" && currentRecommendation) {
@@ -145,6 +148,7 @@ export function transitionPurchaseTask(input: { previous?: PurchaseTask; previou
       selectedNow = currentRecommendation.primarySku;
     }
   } else if (!changedGoal && action.kind === "select_product") {
+    for (const sku of mentionedSkus(action, "rejection")) rejectedNow.push({ sku, quote: action.quote, reason: rejectionReason(input.userMessage), turn: input.currentState.turn });
     selectedNow = mentionedSkus(action, "selection")[0] ?? action.mentions?.[0]?.sku ?? (action.kind === "select_product" && previous.pendingTaskQuestion?.field === "selectionChoice" && !/\bP[123]\d{2}\b/i.test(input.userMessage) ? currentRecommendation?.primarySku : undefined);
     if (selectedNow) pendingTaskQuestion = undefined;
   } else if (!changedGoal && action.kind === "answer_question" && previous.pendingTaskQuestion?.field === "rejectionReason" && previous.pendingTaskQuestion.sku) {
@@ -237,11 +241,12 @@ export function completePurchaseTask(task: PurchaseTask, result: Pick<DecisionRe
   let currentRecommendation = normalized.currentRecommendation;
   let recommendationHistory = normalized.recommendationHistory ?? [];
   let decisionStage = normalized.decisionStage;
-  if (transition) {
+  const commitPostRecommendationAction = Boolean(transition) && result.action !== "safety";
+  if (commitPostRecommendationAction && transition) {
     const bySku = new Map(rejectedSkus.map((item) => [item.sku, item]));
     for (const item of transition.commit.rejected) bySku.set(item.sku, item);
     rejectedSkus = [...bySku.values()];
-    if (transition.commit.selectedSku) {
+    if (transition.commit.selectedSku && result.action === "selection_confirmed") {
       selectedSku = transition.commit.selectedSku;
       rejectedSkus = rejectedSkus.filter((item) => item.sku !== selectedSku);
       decisionStage = "selected";
@@ -268,7 +273,7 @@ export function completePurchaseTask(task: PurchaseTask, result: Pick<DecisionRe
     recommendationHistory,
     ...(selectedSku ? { selectedSku } : { selectedSku: undefined }),
     rejectedSkus,
-    ...(transition ? { lastCommittedAction: transition.commit.action.kind } : {}),
+    ...(commitPostRecommendationAction && transition ? { lastCommittedAction: transition.commit.action.kind } : {}),
   };
 }
 

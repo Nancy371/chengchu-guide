@@ -14,9 +14,18 @@ import type {
   UserState,
 } from "./types";
 
+export interface FactSpec {
+  locked: boolean;
+  requiredLiterals: string[];
+  requiredTerms: string[];
+  forbidden: string[];
+}
+
 export interface FactBlock {
   id: string;
   text: string;
+  semanticKey?: string;
+  spec: FactSpec;
 }
 
 export interface ConversationPlan {
@@ -27,6 +36,7 @@ export interface ConversationPlan {
     previousQuestion?: { field: DecisionQuestionField; text: string };
     confirmedAnswer?: { field: StateField; quote: string; summary: string; acknowledgement: string; anchors: string[] };
     currentAction: DecisionDraft["action"];
+    actionAcknowledgement?: { kind: "reject" | "select" | "explain" | "compare"; fallback: string; anchors: string[] };
     nextQuestionGoal?: { field: DecisionQuestionField; text: string };
   };
 }
@@ -34,6 +44,7 @@ export interface ConversationPlan {
 export interface RenderProposal {
   acknowledgement?: string;
   blockIds?: string[];
+  factBlocks?: Array<{ id: string; text: string }>;
   questions?: Array<{ field: DecisionQuestionField; text: string }>;
   closing?: string;
   actsUsed?: ConversationAct[];
@@ -91,6 +102,106 @@ function productLabel(sku: string, name: string) {
   return name.startsWith(`${sku} `) ? name : `${sku} ${name}`;
 }
 
+const PRODUCT_TERM_SPECS: Record<string, { required: string[]; forbidden: string[] }> = {
+  P101: { required: ["无香", "低泡"], forbidden: ["香味", "淡香", "带香", "泡沫"] },
+  P102: { required: ["清洁感", "香味"], forbidden: ["无香", "低泡"] },
+  P201: { required: ["果酸", "8%"], forbidden: [] },
+  P202: { required: ["无香", "神经酰胺"], forbidden: ["香味", "淡香", "带香"] },
+  P203: { required: ["清爽", "淡香"], forbidden: ["无香"] },
+  P301: { required: ["分装瓶"], forbidden: [] },
+};
+
+const unsafeClaimPattern = /保证|一定有效|治愈|治疗|绝对不过敏|马上见效|闭眼入|必须买|抓紧|最后机会|我也用|我买过|(?:送|赠)(?:小样|礼品|赠品|东西)|赠品|退货|退款|换货|退换|拆封|包邮|正品|授权|淡斑|美白|抗老|祛痘|改善皱纹|手机号|电话|联系方式|地址|收货/;
+const skuMoneyPattern = /P[123]\d{2}|[¥￥]/;
+
+const confirmedAnswerTopics: Record<string, RegExp> = {
+  intent: /想买|洁面|保湿|精华|分装|礼盒/,
+  targetSku: /P[123]\d{2}|洁面|保湿|精华|分装/,
+  categories: /洁面|保湿|精华|分装|礼盒|看/,
+  budget: /预算|元|价位|花|控制在|多少/,
+  budgetScope: /预算|元|价位/,
+  skinType: /干|油|肤质|紧绷|出油|敏感/,
+  sensitiveTendency: /敏感|泛红|刺痛/,
+  currentDiscomfort: /不适|疼|痛|破损|刺痛|红肿/,
+  stinging: /刺痛|刺疼/,
+  pain: /疼|痛/,
+  skinDamage: /破损|受损|屏障/,
+  otherDiscomfort: /不适|红肿|不舒服/,
+  fragrancePreference: /香/,
+  fragranceNote: /香|桂花|玫瑰/,
+  acidExperience: /果酸|酸/,
+  existingProducts: /在用|手里|现在/,
+  travelNeed: /出差|旅行|出行/,
+  useOccasions: /出差|旅行|晨间|夜间/,
+  texturePreference: /质地|清爽|轻薄|黏/,
+  delegateChoice: /定|选|帮/,
+  coreConcern: /清爽|无香|价格|肤感/,
+  channelPreference: /渠道|门店|线上/,
+  claimedOnlinePrice: /价格|线上|同价/,
+  giftBoxType: /礼盒|分装|套装/,
+  policyTopics: /赠品|退换|促销|授权/,
+  rejectionReason: /价格|香味|洗感|方向|不合适/,
+  selectionChoice: /选|定|这款|两支/,
+};
+
+const actionTopics: Record<string, RegExp> = {
+  reject: /排除|不合适|不选|去掉|先放|这款|这支/,
+  select: /就按|选|定|这款|这支/,
+  explain: /原因|为什么|说清楚|讲|前面/,
+  compare: /比|差别|区别|对比|两款/,
+};
+
+function productTermSpec(sku: string) {
+  return PRODUCT_TERM_SPECS[sku] ?? { required: [], forbidden: [] };
+}
+
+function lockedSpec(): FactSpec {
+  return { locked: true, requiredLiterals: [], requiredTerms: [], forbidden: [] };
+}
+
+function recommendSpec(draft: DecisionDraft): FactSpec {
+  const item = draft.recommendations[0];
+  if (!item || draft.recommendations.length !== 1) return lockedSpec();
+  const termSpec = productTermSpec(item.sku);
+  return { locked: false, requiredLiterals: [item.sku, formatMoney(item.priceFen)], requiredTerms: termSpec.required, forbidden: termSpec.forbidden };
+}
+
+function explainSpec(sku: string): FactSpec {
+  const termSpec = productTermSpec(sku);
+  return { locked: false, requiredLiterals: [sku], requiredTerms: termSpec.required, forbidden: termSpec.forbidden };
+}
+
+function prohibitedUnsafeText(text: string) {
+  return skuMoneyPattern.test(text) || unsafeClaimPattern.test(text);
+}
+
+function prohibitedClaims(text: string) {
+  return unsafeClaimPattern.test(text);
+}
+
+function moneyTokens(text: string) {
+  return text.match(/[¥￥]\d+(?:\.\d+)?/g) ?? [];
+}
+
+function factBlockValid(text: string, original: FactBlock) {
+  const spec = original.spec;
+  if (prohibitedClaims(text)) return false;
+  if (spec.requiredLiterals.some((literal) => !text.includes(literal))) return false;
+  if (spec.requiredTerms.some((term) => !text.includes(term))) return false;
+  const originalSkus = new Set(original.text.match(/P[123]\d{2}/g) ?? []);
+  const skus = text.match(/P[123]\d{2}/g) ?? [];
+  if (skus.some((sku) => !originalSkus.has(sku))) return false;
+  const originalMoney = new Set(moneyTokens(original.text));
+  const money = moneyTokens(text);
+  if (money.some((amount) => !originalMoney.has(amount))) return false;
+  return true;
+}
+
+function acknowledgesTopic(text: string, regexp?: RegExp) {
+  if (!regexp) return true;
+  return regexp.test(text);
+}
+
 function hasSignal(signals: TurnSignal[], value: TurnSignal["value"]) {
   return signals.some((item) => item.value === value && item.subject !== "other");
 }
@@ -126,7 +237,7 @@ function taskSkill(draft: DecisionDraft, signals: TurnSignal[], state: UserState
   if (hasSignal(signals, "price_objection") || (fact<string[]>(state, "policyTopics") ?? []).includes("online_price")) return "price_objection";
   if (draft.action === "budget_conflict") return "budget_conflict";
   if (hasSignal(signals, "correction")) return "conversation_repair";
-  if (hasSignal(signals, "hesitant") || draft.recommendations.length > 1 || draft.action === "comparison_only" || draft.action === "unavailable" || draft.action === "close") return "decision_support";
+  if (hasSignal(signals, "hesitant") || draft.recommendations.length > 1 || ["comparison_only", "product_comparison", "product_explanation", "selection_confirmed", "unavailable", "close"].includes(draft.action)) return "decision_support";
   if (draft.action === "clarify") return "clarification";
   return "recommendation";
 }
@@ -151,35 +262,36 @@ function acknowledgedEmotion(signals: TurnSignal[], draft: DecisionDraft): Conve
   return emotion === "worried" || emotion === "frustrated" || emotion === "hesitant" || emotion === "happy" ? emotion : "neutral";
 }
 
-function productAngle(sku: string, state: UserState, alternative = false): string {
+function productAngle(sku: string, state: UserState, alternative = false, variant = 0): string {
   const skin = fact<string>(state, "skinType");
+  const v = ((variant % 2) + 2) % 2;
   switch (sku) {
     case "P101":
       return !alternative && skin === "dry"
         ? "你说自己偏干，这支无香、低泡，洗后也容易冲净"
-        : "它是无香、低泡的一支，洗后容易冲净";
+        : v === 0 ? "它是无香、低泡的一支，洗后容易冲净" : "这支无香、低泡，洗后容易冲净";
     case "P102":
       return !alternative && skin === "oily"
         ? "你说自己偏油，这支的清洁感较强，不过它带香味"
-        : "它的清洁感较强，也带香味，取向和无香洁面不同";
+        : v === 0 ? "它的清洁感较强，也带香味，取向和无香洁面不同" : "这支清洁感较强，也带香味，取向和无香洁面不同";
     case "P201":
-      return "这支含 8% 果酸复合成分；有相关使用经验、希望改善粗糙时可以考虑，使用时要注意防晒";
+      return v === 0 ? "这支含 8% 果酸复合成分；有相关使用经验、希望改善粗糙时可以考虑，使用时要注意防晒" : "它含 8% 果酸复合成分；有相关使用经验、想改善粗糙时可以考虑，使用时要注意防晒";
     case "P202":
       return !alternative && skin === "dry"
         ? "你说自己偏干，这支无香，含神经酰胺类保湿成分"
-        : "它是无香的保湿乳，含神经酰胺类保湿成分";
+        : v === 0 ? "它是无香的保湿乳，含神经酰胺类保湿成分" : "这支无香，含神经酰胺类保湿成分";
     case "P203":
       return !alternative && skin === "oily"
         ? "你说自己偏油，这支质地清爽，不过带淡香"
-        : "它是质地清爽、带淡香的一支";
+        : v === 0 ? "它是质地清爽、带淡香的一支" : "这支质地清爽，带淡香";
     case "P301":
-      return "你想要出行时带着用的小瓶，这盒有 4 个可重复使用的分装瓶，不是护肤品套装";
+      return v === 0 ? "你想要出行时带着用的小瓶，这盒有 4 个可重复使用的分装瓶，不是护肤品套装" : "这盒有 4 个可重复使用的分装瓶，适合带着出门，不是护肤品套装";
     default:
       return PRODUCTS_BY_SKU[sku]?.features.join("、") ?? "";
   }
 }
 
-function recommendationStory(draft: DecisionDraft, state: UserState): string {
+function recommendationStory(draft: DecisionDraft, state: UserState, variant = 0): string {
   const [first, second] = draft.recommendations;
   if (!first) return "";
   const firstName = productLabel(first.sku, first.name);
@@ -187,52 +299,84 @@ function recommendationStory(draft: DecisionDraft, state: UserState): string {
     return `你这次想把洁面和保湿一起选好，我会把 ${firstName} 和 ${productLabel(second.sku, second.name)} 放在一组：前者${PRODUCTS_BY_SKU[first.sku].features.join("、")}；后者${PRODUCTS_BY_SKU[second.sku].features.join("、")}。两件合计 ${formatMoney(draft.totalFen ?? first.priceFen + second.priceFen)}，可以按实际需要决定是否一起买。`;
   }
   if (draft.pricingMode === "alternatives" && second) {
-    return `我会先看 ${firstName}（${formatMoney(first.priceFen)}）：${productAngle(first.sku, state)}。${productLabel(second.sku, second.name)}（${formatMoney(second.priceFen)}）则是另一种取向：${productAngle(second.sku, state, true)}；如果这点更合你意，可以选它。`;
+    return `我会先看 ${firstName}（${formatMoney(first.priceFen)}）：${productAngle(first.sku, state, false, variant)}。${productLabel(second.sku, second.name)}（${formatMoney(second.priceFen)}）则是另一种取向：${productAngle(second.sku, state, true, variant)}；如果这点更合你意，可以选它。`;
   }
-  return `我会先看 ${firstName}（${formatMoney(first.priceFen)}）：${productAngle(first.sku, state)}。`;
+  const leads = [
+    `我会先看 ${firstName}（${formatMoney(first.priceFen)}）`,
+    `先看这款 ${firstName}（${formatMoney(first.priceFen)}）`,
+    `结合你刚说的，先看 ${firstName}（${formatMoney(first.priceFen)}）`,
+  ];
+  const lead = leads[((variant % leads.length) + leads.length) % leads.length];
+  return `${lead}：${productAngle(first.sku, state, false, variant)}。`;
+}
+
+function lockedBlock(id: string, text: string, semanticKey?: string): FactBlock {
+  return { id, text, ...(semanticKey ? { semanticKey } : {}), spec: lockedSpec() };
 }
 
 function factsFor(draft: DecisionDraft, state: UserState): FactBlock[] {
-  if (draft.action === "safety") return [{ id: "safety", text: "先别继续试新的或刺激性护理；如果疼痛、破损或不适一直没有缓解，建议尽快咨询专业人士。这一轮我先不推荐商品，也不作医疗诊断。" }];
-  if (draft.action === "close") return [{ id: "close", text: "好，那这次就先停在这里。什么时候想再看看再来，不急。" }];
+  if (draft.action === "safety") return [lockedBlock("safety", "先别继续试新的或刺激性护理；如果疼痛、破损或不适一直没有缓解，建议尽快咨询专业人士。这一轮我先不推荐商品，也不作医疗诊断。")];
+  if (draft.action === "close") return [lockedBlock("close", "好，那这次就先停在这里。什么时候想再看看再来，不急。")];
   if (draft.action === "price_list") return [
-    { id: "price-list-intro", text: "预算可以晚点再定。我先把当前能看的商品和实价列出来，你慢慢比较。" },
+    lockedBlock("price-list-intro", "预算可以晚点再定。我先把当前能看的商品和实价列出来，你慢慢比较。"),
     ...draft.candidateSkus.flatMap((sku) => {
       const product = PRODUCTS_BY_SKU[sku];
-      return product ? [{ id: `price-list:${sku}`, text: `${productLabel(sku, product.name)}（${product.size}）手册标价 ${formatMoney(product.priceFen)}。` }] : [];
+      return product ? [lockedBlock(`price-list:${sku}`, `${productLabel(sku, product.name)}（${product.size}）手册标价 ${formatMoney(product.priceFen)}。`)] : [];
     }),
   ];
   if (draft.action === "policy_unknown") {
     const topics = fact<string[]>(state, "policyTopics") ?? [];
     const targetSku = draft.candidateSkus[0];
     const blocks: FactBlock[] = [];
-    if (targetSku && PRODUCTS_BY_SKU[targetSku]) blocks.push({ id: `price:${targetSku}`, text: `手册中 ${targetSku} 的标价是 ${formatMoney(PRODUCTS_BY_SKU[targetSku].priceFen)}。` });
-    blocks.push({ id: "policy-limit", text: `品牌手册里没有写明${topics.map((topic) => UNSUPPORTED_POLICY_TOPICS[topic] ?? topic).join("、")}，这点要请门店或系统确认，我先不替他们猜。` });
+    if (targetSku && PRODUCTS_BY_SKU[targetSku]) blocks.push(lockedBlock(`price:${targetSku}`, `手册中 ${targetSku} 的标价是 ${formatMoney(PRODUCTS_BY_SKU[targetSku].priceFen)}。`));
+    blocks.push(lockedBlock("policy-limit", `品牌手册里没有写明${topics.map((topic) => UNSUPPORTED_POLICY_TOPICS[topic] ?? topic).join("、")}，这点要请门店或系统确认，我先不替他们猜。`));
     return blocks;
   }
   if (draft.action === "price_answer") {
     const item = draft.recommendations[0];
     if (!item) return [];
-    return [{ id: `price:${item.sku}`, text: `${productLabel(item.sku, item.name)}（${PRODUCTS_BY_SKU[item.sku].size}）手册标价是 ${formatMoney(item.priceFen)}。${item.sku === "P102" ? "源文件中的完整名称有缺字，所以没有自行补全。" : ""}` }];
+    return [lockedBlock(`price:${item.sku}`, `${productLabel(item.sku, item.name)}（${PRODUCTS_BY_SKU[item.sku].size}）手册标价是 ${formatMoney(item.priceFen)}。${item.sku === "P102" ? "源文件中的完整名称有缺字，所以没有自行补全。" : ""}`)];
   }
+  if (draft.action === "selection_confirmed") {
+    const item = draft.recommendations[0];
+    return item ? [lockedBlock(`selected:${item.sku}`, `你选的是 ${productLabel(item.sku, item.name)}，手册标价 ${formatMoney(item.priceFen)}。`, "selection:confirmed-product")] : [];
+  }
+  if (draft.action === "product_explanation") {
+    const sku = draft.candidateSkus[0];
+    const product = PRODUCTS_BY_SKU[sku];
+    const fit = draft.productFits.find((item) => item.sku === sku);
+    if (!product || !fit) return [];
+    if (fit.status === "excluded" && fit.blockers.length) return [lockedBlock(`explain:${sku}`, `${productLabel(sku, product.name)} 这次没进入推荐，是因为${fit.blockers.join("；")}。`, `explain:${sku}:excluded`)];
+    const current = state.purchaseTask?.currentRecommendation?.primarySku;
+    const currentProduct = current ? PRODUCTS_BY_SKU[current] : undefined;
+    const reason = current && currentProduct && current !== sku
+      ? `${productLabel(sku, product.name)} 本身也可以选；只是当时结合你已确认的需求，${productLabel(current, currentProduct.name)} 被放在了前面。${productAngle(sku, state)}。`
+      : `${productLabel(sku, product.name)} 的已核实特点是：${product.features.join("、")}。`;
+    return [{ id: `explain:${sku}`, semanticKey: `explain:${sku}:tradeoff`, text: reason, spec: explainSpec(sku) }];
+  }
+  if (draft.action === "product_comparison") return draft.candidateSkus.flatMap((sku) => {
+    const product = PRODUCTS_BY_SKU[sku];
+    return product ? [lockedBlock(`requested-comparison:${sku}`, `${productLabel(sku, product.name)}（${product.size}）标价 ${formatMoney(product.priceFen)}：${product.features.join("、")}。`, `compare:${sku}`)] : [];
+  });
   if (draft.action === "budget_conflict") {
     const budget = fact<number>(state, "budget") ?? 0;
     if (draft.pricingMode === "single" && !draft.recommendations.length) {
       const prices = draft.evidence.filter((item) => item.id.startsWith("price:")).map((item) => `${item.label.replace(" 手册标价", "")} ${item.detail}`).join("、");
-      return [{ id: "budget-single", text: `你想把预算控制在 ${formatMoney(budget)} 左右。手册里的相关商品标价是 ${prices}，目前没有预算内的选择，不用为了买而硬加预算。` }];
+      return [lockedBlock("budget-single", `你想把预算控制在 ${formatMoney(budget)} 左右。手册里的相关商品标价是 ${prices}，目前没有预算内的选择，不用为了买而硬加预算。`)];
     }
-    return [{ id: "budget-bundle", text: `这套搭配合计 ${formatMoney(draft.totalFen ?? 0)}，比你的 ${formatMoney(budget)} 预算高 ${formatMoney(draft.budgetGapFen ?? 0)}，所以不能把它算成预算内方案。` }];
+    return [lockedBlock("budget-bundle", `这套搭配合计 ${formatMoney(draft.totalFen ?? 0)}，比你的 ${formatMoney(budget)} 预算高 ${formatMoney(draft.budgetGapFen ?? 0)}，所以不能把它算成预算内方案。`)];
   }
-  if (draft.action === "unavailable") return [{ id: "unavailable", text: draft.routeReason.includes("不愿回答") ? `可以先不回答。${draft.limitations.join("；")}。` : `照你现在说的情况，现有商品里还没有适合直接推荐的。${draft.limitations.length ? `卡在这里：${draft.limitations.join("；")}。` : ""}` }];
+  if (draft.action === "unavailable") return [lockedBlock("unavailable", draft.routeReason.includes("不愿回答") ? `可以先不回答。${draft.limitations.join("；")}。` : `照你现在说的情况，现有商品里还没有适合直接推荐的。${draft.limitations.length ? `卡在这里：${draft.limitations.join("；")}。` : ""}`)];
   if (draft.action === "comparison_only") return [
-    { id: "comparison-intro", text: "这点偏好还不太确定，我先把两款真正有差别的地方摆出来，你可以先看看。" },
+    lockedBlock("comparison-intro", "这点偏好还不太确定，我先把两款真正有差别的地方摆出来，你可以先看看。"),
     ...draft.candidateSkus.flatMap((sku) => {
       const product = PRODUCTS_BY_SKU[sku];
-      return product ? [{ id: `comparison:${sku}`, text: `${productLabel(sku, product.name)}（${product.size}）标价 ${formatMoney(product.priceFen)}：${product.features.join("、")}。` }] : [];
+      return product ? [lockedBlock(`comparison:${sku}`, `${productLabel(sku, product.name)}（${product.size}）标价 ${formatMoney(product.priceFen)}：${product.features.join("、")}。`)] : [];
     }),
   ];
   if (draft.action === "recommend") {
-    return [{ id: "recommendation", text: recommendationStory(draft, state) }];
+    const variant = state.turn;
+    return [{ id: "recommendation", text: recommendationStory(draft, state, variant), spec: recommendSpec(draft) }];
   }
   return [];
 }
@@ -288,6 +432,7 @@ function confirmedAnswerFor(state: UserState, updatedFields: StateField[], previ
 
 function acknowledgementFor(plan: ConversationPlan, signals: TurnSignal[]) {
   const policy = plan.policy;
+  if (plan.turnContext.actionAcknowledgement) return plan.turnContext.actionAcknowledgement.fallback;
   if (policy.userEmotion === "discomfort") return "听起来现在脸不太舒服。";
   if (policy.taskSkill === "conversation_repair" && policy.behaviorSkills.includes("routine_fit")) return plan.turnContext.confirmedAnswer ? `刚才是我听偏了，${plan.turnContext.confirmedAnswer.summary}，也尽量少加步骤。` : "刚才是我听偏了。这次按你新说的方向来，也尽量少加步骤。";
   if (policy.taskSkill === "conversation_repair") return plan.turnContext.confirmedAnswer ? `刚才是我听偏了，${plan.turnContext.confirmedAnswer.summary}。` : "刚才是我听偏了，按你新补充的情况重新看。";
@@ -357,6 +502,16 @@ export function planConversation(input: {
   };
   const questionGoals = selectedQuestionFields.map((field) => ({ field, fallback: questionFor(field, state, questionAttempt ?? (previousResult?.questionFields.includes(field) ? 2 : 1)) }));
   const confirmedAnswer = confirmedAnswerFor(state, updatedFields, previousResult);
+  const turnAction = state.purchaseTask?.turnAction.kind;
+  const actionAcknowledgement = turnAction === "reject_current"
+    ? { kind: "reject" as const, fallback: "好，这款先排除。", anchors: ["排除", "不合适"] }
+    : effectiveDraft.action === "selection_confirmed"
+      ? { kind: "select" as const, fallback: "好，就按这款。", anchors: ["就按", "选"] }
+      : effectiveDraft.action === "product_explanation"
+        ? { kind: "explain" as const, fallback: "好，我把它没排在前面的原因说清楚。", anchors: ["原因", "说清楚"] }
+        : effectiveDraft.action === "product_comparison"
+          ? { kind: "compare" as const, fallback: "好，我们只比这两款的实际差别。", anchors: ["比", "差别", "对比"] }
+          : undefined;
   return {
     policy,
     factBlocks: [
@@ -367,13 +522,10 @@ export function planConversation(input: {
       ...(previousResult?.questionFields[0] && previousResult.questions?.[0] ? { previousQuestion: { field: previousResult.questionFields[0], text: previousResult.questions[0] } } : {}),
       ...(confirmedAnswer ? { confirmedAnswer } : {}),
       currentAction: effectiveDraft.action,
+      ...(actionAcknowledgement ? { actionAcknowledgement } : {}),
       ...(questionGoals[0] ? { nextQuestionGoal: { field: questionGoals[0].field, text: questionGoals[0].fallback } } : {}),
     },
   };
-}
-
-function prohibitedFreeText(text: string) {
-  return /P[123]\d{2}|[¥￥]|保证|一定有效|治愈|治疗|绝对不过敏|马上见效|闭眼入|必须买|抓紧|最后机会|我也用|我买过|根据您的需求|请问您|为了更好地|很高兴为您|亲[，,]|我完全理解|(?:送|赠)(?:小样|礼品|赠品|东西)|赠品|退货|退款|换货|退换|拆封|包邮|正品|授权|淡斑|美白|抗老|祛痘|改善皱纹|手机号|电话|联系方式|地址|收货/.test(text);
 }
 
 function usesUnauthorizedNumber(text: string, plan: ConversationPlan) {
@@ -403,28 +555,46 @@ export function validateRenderProposal(value: unknown, plan: ConversationPlan): 
   const proposal = value as RenderProposal;
   const requiredIds = plan.factBlocks.map((block) => block.id);
   if (!Array.isArray(proposal.blockIds) || proposal.blockIds.length !== requiredIds.length || proposal.blockIds.some((id, index) => id !== requiredIds[index])) return null;
+  const originalById = new Map(plan.factBlocks.map((block) => [block.id, block]));
+  const blockTextById = new Map(plan.factBlocks.map((block) => [block.id, block.text]));
+  if (proposal.factBlocks !== undefined) {
+    if (!Array.isArray(proposal.factBlocks) || proposal.factBlocks.length !== requiredIds.length) return null;
+    for (const entry of proposal.factBlocks) {
+      if (!entry || typeof entry.id !== "string" || typeof entry.text !== "string") return null;
+      const original = originalById.get(entry.id);
+      if (!original) return null;
+      const text = entry.text.trim();
+      if (!text) return null;
+      if (original.spec.locked ? text !== original.text : !factBlockValid(text, original)) return null;
+      blockTextById.set(entry.id, text);
+    }
+  }
   const acknowledgement = typeof proposal.acknowledgement === "string" ? proposal.acknowledgement.trim() : "";
   const closing = typeof proposal.closing === "string" ? proposal.closing.trim() : "";
   if (plan.policy.shouldAcknowledge && !acknowledgement) return null;
-  if (acknowledgement.length > 70 || closing.length > 70 || prohibitedFreeText(`${acknowledgement}${closing}`) || /[？?]/.test(`${acknowledgement}${closing}`)) return null;
+  if (acknowledgement.length > 140 || closing.length > 140 || prohibitedUnsafeText(`${acknowledgement}${closing}`) || /[？?]/.test(`${acknowledgement}${closing}`)) return null;
   if (usesUnauthorizedNumber(`${acknowledgement}${closing}`, plan)) return null;
-  if (plan.turnContext.confirmedAnswer?.anchors.length && !plan.turnContext.confirmedAnswer.anchors.some((anchor) => acknowledgement.includes(anchor))) return null;
+  if (plan.turnContext.confirmedAnswer && !acknowledgesTopic(acknowledgement, confirmedAnswerTopics[plan.turnContext.confirmedAnswer.field])) return null;
+  if (plan.turnContext.actionAcknowledgement && !acknowledgesTopic(acknowledgement, actionTopics[plan.turnContext.actionAcknowledgement.kind])) return null;
+  if (plan.turnContext.actionAcknowledgement?.kind === "reject" && /(?:换一|另一|新的|更温和|更清爽|改推)/.test(acknowledgement)) return null;
+  if (!["recommend", "product_comparison"].includes(plan.policy.nextAction) && /(?:换一支|另一款|新推荐)/.test(`${acknowledgement}${closing}`)) return null;
+  const semanticKeys = plan.factBlocks.map((block) => block.semanticKey ?? block.id);
+  if (new Set(semanticKeys).size !== semanticKeys.length) return null;
   if (claimsUnselectedGap(`${acknowledgement}${closing}`, plan.policy.selectedQuestionFields)) return null;
   if (plan.policy.nextAction === "comparison_only" && /推荐|主推|首选|适合|先选|先看|值得买|入手/.test(`${acknowledgement}${closing}`)) return null;
   const questions = Array.isArray(proposal.questions) ? proposal.questions : [];
   if (questions.length !== plan.policy.selectedQuestionFields.length) return null;
   if (plan.policy.nextAction === "clarify" && closing) return null;
   for (const question of questions) {
-    if (!question || !plan.policy.selectedQuestionFields.includes(question.field) || typeof question.text !== "string" || !question.text.trim() || question.text.length > 90 || prohibitedFreeText(question.text) || usesUnauthorizedNumber(question.text, plan)) return null;
+    if (!question || !plan.policy.selectedQuestionFields.includes(question.field) || typeof question.text !== "string" || !question.text.trim() || question.text.length > 140 || prohibitedUnsafeText(question.text) || usesUnauthorizedNumber(question.text, plan)) return null;
     if ((question.text.match(/[？?]/g) ?? []).length !== 1) return null;
   }
   const freeText = [acknowledgement, ...questions.map((item) => item.text), closing].join("");
   if (plan.policy.emojiPolicy === "none" && emojiCount(freeText) > 0) return null;
   if (plan.policy.emojiPolicy === "optional_one" && emojiCount(freeText) > 1) return null;
-  const blockMap = new Map(plan.factBlocks.map((block) => [block.id, block.text]));
-  const parts = [acknowledgement, ...proposal.blockIds.map((id) => blockMap.get(id) ?? ""), ...questions.map((item) => item.text.trim()), closing].filter(Boolean);
+  const parts = [acknowledgement, ...proposal.blockIds.map((id) => blockTextById.get(id) ?? ""), ...questions.map((item) => item.text.trim()), closing].filter(Boolean);
   const reply = parts.join(" ");
-  if (!reply || reply.length > 420) return null;
+  if (!reply || reply.length > 600) return null;
   return { reply, questions: questions.map((item) => item.text.trim()), factBlockIds: proposal.blockIds };
 }
 

@@ -26,3 +26,10 @@ test("every active question field has canonical choices and custom input remains
     assert.ok(options.every((item) => item.answerText.length > 0), field);
   }
 });
+
+test("post-recommendation task questions provide grounded choices", () => {
+  const state = applyDelta({ facts: {}, history: [], turn: 0 }, deterministicUnderstand("预算200，想买洗面奶").delta);
+  state.purchaseTask = { goal: { kind: "categories", categories: ["cleanser"], version: 1, key: "cleanser" }, displayedSkus: ["P101", "P102"], turnAction: { kind: "continue", quote: "" }, budget: { status: "limited", fen: 20000, goalVersion: 1 }, decisionStage: "recommended", currentRecommendation: { primarySku: "P101", alternativeSkus: ["P102"], inputVersion: 1 }, updatedTurn: state.turn };
+  assert.deepEqual(questionOptions("rejectionReason", [], state).map((item) => item.label), ["价格不合适", "香味或洗感", "想换个方向"]);
+  assert.deepEqual(questionOptions("selectionChoice", [], state).map((item) => item.answerText), ["就选 P101", "就选 P102"]);
+});

@@ -191,6 +191,7 @@ export function classifyPurchaseAction(text: string, pendingQuestion?: StateFiel
   const productReference = mentions.length > 0 || /这款|这一款|它|刚才(?:推荐)?的/.test(compact);
   if (productReference && /多少钱|价格|售价|贵不贵/.test(compact)) return withMentions({ kind: "ask_about_product", quote: text, topic: "price" });
   if (productReference && /促销|优惠|活动|赠品|退换|授权|正品|真假/.test(compact)) return withMentions({ kind: "ask_about_product", quote: text, topic: "policy" });
+  if (/(?:这款|这一款|这个|它)(?:很|挺)?(?:合适|可以|不错|挺好)|(?:接受|选|要)(?:这款|这一款|这个|它)/.test(compact) && !/(?:不合适|不可以|不接受|不选|不要)/.test(compact)) return withMentions({ kind: "accept_current", quote: text });
   if (mentions.some((item) => item.role === "rejection") || productReference && /不合适|不太合适|不喜欢|不要(?:这|它)|不选/.test(compact)) return withMentions({ kind: "reject_current", quote: text });
   if (/还有(?:其他|别的).*(?:推荐|选择|款)|(?:换|看)(?:一个|一款|别的)|别的呢|其他呢/.test(compact)) return withMentions({ kind: "request_alternative", quote: text });
   if (/礼盒/.test(compact) && !/赠品/.test(compact)) return { kind: "switch_goal", quote: text };
@@ -198,7 +199,7 @@ export function classifyPurchaseAction(text: string, pendingQuestion?: StateFiel
   if (/多少钱|价格|售价|贵不贵/.test(compact)) return { kind: "price_interruption", quote: text };
   if (/促销|优惠|活动|赠品|送什么|同价|差价|退换|退货|换货|授权|正品|真假/.test(compact)) return { kind: "policy_interruption", quote: text };
   if (pendingQuestion) return { kind: "answer_question", quote: text };
-  if (/^(?:这款|这一款|这个|它)?(?:很)?(?:合适|可以|不错|挺好|正合适)(?:吧|呀|啊|的)?[。！!，,]*$|^(?:就)?(?:要|选)(?:这款|这一款|这个|它)[吧。！!]*$/.test(compact)) return withMentions({ kind: "accept_current", quote: text });
+  if (/^(?:这款|这一款|这个|它)?(?:很)?(?:合适|可以|不错|挺好|正合适)(?:吧|呀|啊|的)?[。！!，,]*$|^(?:两款)?都(?:合适|可以|不错|挺好)[吧。！!]*$|^(?:就)?(?:要|选)(?:这款|这一款|这个|它)[吧。！!]*$/.test(compact)) return withMentions({ kind: "accept_current", quote: text });
   if (/^(?:这款|这一款|这个|它)?(?:不合适|不太合适|不行|不喜欢)(?:吧|呀|啊|的)?[。！!，,]*$/.test(compact)) return withMentions({ kind: "reject_current", quote: text });
   return { kind: "continue", quote: text };
 }
@@ -209,13 +210,15 @@ export function classifySkuMentions(text: string): SkuMention[] {
   if (!skus.length) return [];
   const comparing = /比|比较|区别|不同|和|跟|与|还是/.test(compact) && skus.length >= 2;
   return skus.map((sku): SkuMention => {
-    const index = compact.indexOf(sku);
-    const around = compact.slice(Math.max(0, index - 8), index + sku.length + 10);
+    const clause = compact.split(/[，,。；;！!？?]/).find((part) => part.includes(sku)) ?? compact;
+    const escapedSku = sku.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const explicitRejection = new RegExp(`(?:不要|不选|排除|拒绝)${escapedSku}|${escapedSku}(?:不合适|不喜欢|太贵|不要|不选|排除)`);
+    const explicitSelection = new RegExp(`(?:就要|要买|选择?|定|换成?|改成?|还是)${escapedSku}|${escapedSku}(?:就行|可以|合适|不错)`);
     let role: SkuMention["role"] = "target";
     if (comparing) role = "comparison";
-    else if (/不要|不选|不合适|不喜欢|太贵|排除/.test(around)) role = "rejection";
-    else if (/就要|要它|选它|选择|买它|定P|还是P/.test(around)) role = "selection";
-    else if (/为什么|怎么|多少钱|价格|售价|贵不贵|介绍|说说|了解|适合吗|推荐吗/.test(compact)) role = "inquiry";
+    else if (explicitRejection.test(clause)) role = "rejection";
+    else if (explicitSelection.test(clause)) role = "selection";
+    else if (/为什么|怎么|多少钱|价格|售价|贵不贵|介绍|说说|了解|适合吗|推荐吗/.test(clause)) role = "inquiry";
     else if (!/(?:想买|想看|我要|要买|考虑|换成|改看|看看|选)/.test(compact)) role = "inquiry";
     return { sku, quote: sku, role };
   });
@@ -339,7 +342,7 @@ const habitKinds = new Set(["routine_preference", "frequent_travel", "fragrance_
 
 export function validateUnderstanding(value: unknown, text: string, pendingQuestion?: StateField): TurnUnderstanding | null {
   if (!value || typeof value !== "object") return null;
-  const raw = value as { updates?: unknown; signals?: unknown; lifestyle?: unknown; purchaseAction?: unknown };
+  const raw = value as { updates?: unknown; signals?: unknown; lifestyle?: unknown; purchaseAction?: unknown; skuMentions?: unknown };
   const delta = validateDelta({ updates: raw.updates }, text);
   if (!delta) return null;
   const signals = Array.isArray(raw.signals) ? raw.signals.flatMap((item): TurnSignal[] => {
@@ -368,7 +371,20 @@ export function validateUnderstanding(value: unknown, text: string, pendingQuest
       if (local.kind === candidate.kind) purchaseAction = local;
     }
   }
-  const skuMentions = classifySkuMentions(text);
+  const roles = new Set<SkuMention["role"]>(["target", "comparison", "inquiry", "rejection", "selection"]);
+  const modelMentions = Array.isArray(raw.skuMentions) ? raw.skuMentions.flatMap((item): SkuMention[] => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Partial<SkuMention>;
+    if (typeof candidate.sku !== "string" || !PRODUCTS_BY_SKU[candidate.sku] || typeof candidate.quote !== "string" || !candidate.quote || !text.includes(candidate.quote) || !candidate.quote.toUpperCase().includes(candidate.sku) || !candidate.role || !roles.has(candidate.role)) return [];
+    const compact = candidate.quote.replace(/\s+/g, "");
+    const supported = candidate.role === "comparison" ? /比|比较|区别|不同|和|跟|与|还是/.test(text.replace(/\s+/g, ""))
+      : candidate.role === "inquiry" ? /为什么|怎么|多少钱|价格|售价|贵不贵|介绍|说说|了解|适合吗|推荐吗/.test(text.replace(/\s+/g, ""))
+        : candidate.role === "rejection" ? /不要|不选|不合适|不喜欢|太贵|排除/.test(compact)
+          : candidate.role === "selection" ? /就要|选|选择|定下|还是/.test(compact)
+            : /想买|想看|我要|考虑|换成|改看|看看/.test(compact) && !/为什么|多少钱|不合适|不要/.test(compact);
+    return supported ? [{ sku: candidate.sku, quote: candidate.quote, role: candidate.role }] : [];
+  }) : [];
+  const skuMentions = modelMentions.length ? modelMentions : classifySkuMentions(text);
   return { delta, signals, lifestyle, purchaseAction, ...(skuMentions.length ? { skuMentions } : {}) };
 }
 

@@ -405,6 +405,8 @@ test("rejecting the current recommendation asks one reason then excludes that SK
   assert.deepEqual(rejected.questionFields, ["rejectionReason"]);
   assert.equal(rejected.questions.length, 1);
   assert.deepEqual(rejected.recommendations, []);
+  assert.match(rejected.reply, /这款先排除/);
+  assert.doesNotMatch(rejected.reply, /换一支|另一款|新推荐/);
   assert.deepEqual(rejected.purchaseTask?.rejectedSkus?.map((item) => item.sku), ["P102"]);
   assert.equal(rejected.purchaseTask?.decisionStage, "clarifying_rejection");
 
@@ -422,6 +424,8 @@ test("accepting the current recommendation confirms selection instead of replayi
   assert.equal(selected.purchaseTask?.selectedSku, first.purchaseTask?.currentRecommendation?.primarySku);
   assert.equal(selected.purchaseTask?.decisionStage, "selected");
   assert.notEqual(selected.action, "price_list");
+  assert.match(selected.reply, /就按这款/);
+  assert.equal((selected.reply.match(/P102/g) ?? []).length, 1);
 });
 
 test("asking why or comparing products preserves the current goal without turning the SKU into a target", async () => {
@@ -433,11 +437,15 @@ test("asking why or comparing products preserves the current goal without turnin
   assert.deepEqual(explained.purchaseTask?.goal.categories, ["cleanser"]);
   assert.equal(explained.state.facts.targetSku, undefined);
   assert.equal(explained.purchaseTask?.currentRecommendation?.primarySku, "P102");
+  assert.equal((explained.reply.match(/P101/g) ?? []).length, 1);
+  assert.doesNotMatch(explained.reply, /换一支|另一款|新推荐/);
 
   const compared = (await agent.handleTurn("s", "post-explain-3", "P101 和 P102 比呢")).result;
   assert.equal(compared.action, "product_comparison");
   assert.deepEqual(new Set(compared.candidateSkus), new Set(["P101", "P102"]));
   assert.equal(compared.state.facts.targetSku, undefined);
+  assert.equal((compared.reply.match(/P101/g) ?? []).length, 1);
+  assert.equal((compared.reply.match(/P102/g) ?? []).length, 1);
 });
 
 test("a stale rejection reply cannot commit rejected or displayed product progress", async () => {

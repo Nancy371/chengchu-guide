@@ -85,6 +85,11 @@ test("post-recommendation language is classified as a purchase event rather than
   const selected = deterministicUnderstand("就要 P102");
   assert.equal(selected.purchaseAction?.kind, "select_product");
   assert.deepEqual(selected.skuMentions, [{ sku: "P102", quote: "P102", role: "selection" }]);
+
+  const mixed = deterministicUnderstand("不要 P101，换 P102");
+  assert.equal(mixed.purchaseAction?.kind, "select_product");
+  assert.equal(mixed.skuMentions?.find((item) => item.sku === "P101")?.role, "rejection");
+  assert.equal(mixed.skuMentions?.find((item) => item.sku === "P102")?.role, "selection");
 });
 
 test("rejecting a current recommendation creates an effective exclusion but commits it only with the reply", () => {
@@ -120,10 +125,54 @@ test("accepting or explicitly selecting a product becomes durable only after res
   assert.equal(accepted.commit.selectedSku, "P101");
   assert.equal(accepted.task.selectedSku, undefined);
 
-  const result = { action: "recommend", candidateSkus: ["P101"], recommendations: [{ sku: "P101" }], versions: { input: 2, state: 2, knowledge: "test" } } as Pick<DecisionResult, "action" | "candidateSkus" | "recommendations" | "versions">;
+  const result = { action: "selection_confirmed", candidateSkus: ["P101"], recommendations: [{ sku: "P101" }], versions: { input: 2, state: 2, knowledge: "test" } } as Pick<DecisionResult, "action" | "candidateSkus" | "recommendations" | "versions">;
   assert.equal(completePurchaseTask(accepted.task, result, accepted).selectedSku, "P101");
 
   const explicitUnderstanding = deterministicUnderstand("就要 P102");
   const explicit = transitionPurchaseTask({ previous: base, previousState: state, currentState: state, understanding: explicitUnderstanding, userMessage: "就要 P102", inputVersion: 2 });
   assert.equal(explicit.commit.selectedSku, "P102");
+});
+
+test("a known rejection reason advances without another question", () => {
+  const state = applyDelta(empty(), deterministicUnderstand("预算200，想买洗面奶").delta);
+  const base = { ...rebuildPurchaseTask(state), decisionStage: "recommended" as const, currentRecommendation: { primarySku: "P101", alternativeSkus: ["P102"], inputVersion: 1 } };
+  const understanding = deterministicUnderstand("P101 太贵");
+  const transition = transitionPurchaseTask({ previous: base, previousState: state, currentState: state, understanding, userMessage: "P101 太贵", inputVersion: 2 });
+  assert.equal(transition.commit.rejected[0]?.reason, "price");
+  assert.equal(transition.nextRequiredAction, undefined);
+  assert.equal(transition.task.pendingTaskQuestion, undefined);
+  assert.equal(transition.task.decisionStage, "discovering");
+});
+
+test("accepting two shown products asks for a choice instead of selecting one", () => {
+  const state = applyDelta(empty(), deterministicUnderstand("预算200，想买洗面奶").delta);
+  const base = { ...rebuildPurchaseTask(state), decisionStage: "recommended" as const, currentRecommendation: { primarySku: "P101", alternativeSkus: ["P102"], inputVersion: 1 } };
+  const understanding = deterministicUnderstand("两款都不错");
+  const transition = transitionPurchaseTask({ previous: base, previousState: state, currentState: state, understanding, userMessage: "两款都不错", inputVersion: 2 });
+  assert.equal(transition.commit.selectedSku, undefined);
+  assert.equal(transition.nextRequiredAction, "choose_between_recommendations");
+  assert.equal(transition.task.pendingTaskQuestion?.field, "selectionChoice");
+});
+
+test("a safety response cannot commit a simultaneous product acceptance", () => {
+  const state = applyDelta(empty(), deterministicUnderstand("预算200，想买洗面奶").delta);
+  const base = { ...rebuildPurchaseTask(state), decisionStage: "recommended" as const, currentRecommendation: { primarySku: "P101", alternativeSkus: [], inputVersion: 1 } };
+  const understanding = deterministicUnderstand("这款合适，但我现在脸很疼");
+  const currentState = applyDelta(state, understanding.delta);
+  const transition = transitionPurchaseTask({ previous: base, previousState: state, currentState, understanding, userMessage: "这款合适，但我现在脸很疼", inputVersion: 2 });
+  const result = { action: "safety", candidateSkus: [], recommendations: [], versions: { input: 2, state: 2, knowledge: "test" } } as Pick<DecisionResult, "action" | "candidateSkus" | "recommendations" | "versions">;
+  const completed = completePurchaseTask(transition.task, result, transition);
+  assert.equal(completed.selectedSku, undefined);
+  assert.notEqual(completed.lastCommittedAction, "accept_current");
+});
+
+test("selecting a replacement also commits the explicitly rejected SKU", () => {
+  const state = applyDelta(empty(), deterministicUnderstand("预算200，想买洗面奶").delta);
+  const base = { ...rebuildPurchaseTask(state), decisionStage: "recommended" as const, currentRecommendation: { primarySku: "P101", alternativeSkus: ["P102"], inputVersion: 1 } };
+  const understanding = deterministicUnderstand("不要 P101，换 P102");
+  const transition = transitionPurchaseTask({ previous: base, previousState: state, currentState: state, understanding, userMessage: "不要 P101，换 P102", inputVersion: 2 });
+  const result = { action: "selection_confirmed", candidateSkus: ["P102"], recommendations: [{ sku: "P102" }], versions: { input: 2, state: 2, knowledge: "test" } } as Pick<DecisionResult, "action" | "candidateSkus" | "recommendations" | "versions">;
+  const completed = completePurchaseTask(transition.task, result, transition);
+  assert.equal(completed.selectedSku, "P102");
+  assert.deepEqual(completed.rejectedSkus?.map((item) => item.sku), ["P101"]);
 });

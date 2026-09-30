@@ -1,7 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ClipboardCheck, RotateCcw, ShieldCheck, Sparkles } from "lucide-react";
+import {
+  AlarmClock,
+  ArrowUp,
+  BadgeDollarSign,
+  ClipboardCheck,
+  FlaskConical,
+  RotateCcw,
+  Search,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { PreferencesDrawer } from "@/components/preferences-drawer";
@@ -52,11 +62,22 @@ declare global {
 }
 
 const starters = [
-  "想找一支洗完不紧绷的洁面",
-  "早上赶时间，想把护理步骤减一减",
-  "想试试果酸，但有点担心刺激",
-  "P101 网上更便宜，想比一比",
+  { label: "温和清洁", text: "想找一支洗完不紧绷的洁面", icon: Search },
+  { label: "精简护理", text: "早上赶时间，想把护理步骤减一减", icon: AlarmClock },
+  { label: "耐受评估", text: "想试试果酸，但有点担心刺激", icon: FlaskConical },
+  { label: "价格比较", text: "P101 网上更便宜，想比一比", icon: BadgeDollarSign },
 ];
+
+// 导购形象位。素材取自品牌 2D 形象页（见 design/derive-guide-images.py）；
+// 资源缺失时退回“澄”字徽记，布局不会塌成空洞。
+function GuidePortrait({ src }: { src: string }) {
+  const [missing, setMissing] = useState(false);
+  if (missing) return <span className="guide-fallback" aria-hidden="true">澄</span>;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- 需要在缺图时干净回退，next/image 做不到
+    <img className="guide-portrait" src={src} alt="" aria-hidden="true" decoding="async" onError={() => setMissing(true)} />
+  );
+}
 
 const fieldLabels: Record<string, string> = {
   intent: "本轮意图",
@@ -100,6 +121,7 @@ const valueLabels: Record<string, string> = {
   exercise: "运动后",
   simple_routine: "希望步骤简单",
   lightweight: "偏好轻薄、不黏",
+  avoid_tightness: "避免洗后紧绷",
   simple: "希望步骤简单",
   single_item: "倾向单品购买",
   avoid_duplicate: "避免重复购买",
@@ -140,16 +162,20 @@ function RecommendationRows({ result }: { result: DecisionResult }) {
     <div className="recommendation-list" aria-label="推荐商品">
       {result.recommendations.map((item, index) => (
         <article className="product-row" key={item.sku}>
-          <div className="product-index">{String(index + 1).padStart(2, "0")}</div>
+          <div className="product-index" aria-hidden="true">{String(index + 1).padStart(2, "0")}</div>
           <div className="product-copy">
             <div className="product-heading">
               <span className="sku">{item.sku}</span>
               <h3>{item.name}</h3>
             </div>
-            <p>{item.facts?.join(" · ") ?? item.reasons[0] ?? "商品信息已核实"}</p>
+            {item.facts?.length ? (
+              <div className="fact-tags">{item.facts.slice(0, 3).map((fact) => <span key={fact}>{fact}</span>)}</div>
+            ) : (
+              <p>{item.reasons[0] ?? "商品信息已核实"}</p>
+            )}
             {item.sku === "P201" ? <p className="tradeoff">用这款时，白天记得做好防晒</p> : null}
           </div>
-          <strong>¥{item.priceFen / 100}</strong>
+          <strong className="price-chip">¥{item.priceFen / 100}</strong>
         </article>
       ))}
       {result.pricingMode === "bundle" && result.totalFen ? (
@@ -159,11 +185,19 @@ function RecommendationRows({ result }: { result: DecisionResult }) {
   );
 }
 
-function EvidenceDrawer({ result }: { result: DecisionResult | null }) {
+function EvidenceDrawer({
+  result,
+  open,
+  onOpenChange,
+}: {
+  result: DecisionResult | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   return (
-    <Sheet>
+    <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetTrigger asChild>
-        <Button className="evidence-button" variant="outline" disabled={!result}>
+        <Button className="evidence-button" variant="outline">
           <ClipboardCheck aria-hidden="true" /> 我参考了什么
         </Button>
       </SheetTrigger>
@@ -254,13 +288,13 @@ function EvidenceDrawer({ result }: { result: DecisionResult | null }) {
                     {result.agentTrace ? (
                       <>
                         <p>规划步骤 <strong>{result.agentTrace.planner.map((item) => `${item.action}（${item.policy === "allowed" ? "通过" : "拒绝"}）`).join(" → ") || "规则直达"}</strong></p>
-                        <p>最终授权 <strong>{result.agentTrace.authorization} · {result.agentTrace.authorizationReason}</strong></p>
+                        <p>最终授权 <strong>{result.agentTrace.authorization}，{result.agentTrace.authorizationReason}</strong></p>
                         {result.agentTrace.reasonerProposal ? <p>模型提案 <strong>{result.agentTrace.reasonerProposal.kind === "ask" ? `追问 ${result.agentTrace.reasonerProposal.field}` : result.agentTrace.reasonerProposal.skus.join("、")}</strong></p> : null}
                         {result.agentTrace.fallbackReason ? <p>降级原因 <strong>{result.agentTrace.fallbackReason}</strong></p> : null}
                       </>
                     ) : null}
                     {(result.audits ?? []).map((audit, index) => (
-                      <p key={`${audit.stage}-${index}`}>{audit.stage} · {audit.modelInvoked ? `${audit.model} / ${audit.used ? "已采用" : "未采用"}` : "本地降级"} · {audit.latencyMs}ms</p>
+                      <p key={`${audit.stage}-${index}`}>{audit.stage}，{audit.modelInvoked ? `${audit.model} / ${audit.used ? "已采用" : "未采用"}` : "本地降级"}，{audit.latencyMs}ms</p>
                     ))}
                     {result.limitations.map((item) => <p className="limitation" key={item}>还需要留意：{item}</p>)}
                   </div>
@@ -268,7 +302,14 @@ function EvidenceDrawer({ result }: { result: DecisionResult | null }) {
               </AccordionItem>
             </Accordion>
           </div>
-        ) : null}
+        ) : (
+          <div className="evidence-body">
+            <div className="evidence-empty">
+              <ClipboardCheck aria-hidden="true" />
+              <p>这轮还没有可展开的依据。你先说说想找什么，我核对过的商品资料、金额和拿不准的地方都会记在这里。</p>
+            </div>
+          </div>
+        )}
       </SheetContent>
     </Sheet>
   );
@@ -281,11 +322,13 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [serviceError, setServiceError] = useState("");
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const submitRef = useRef<(text: string) => Promise<DecisionResult | null>>(async () => null);
 
-  const facts = useMemo(() => Object.entries(latestResult?.state.facts ?? {}).slice(0, 6), [latestResult]);
+  const allFacts = useMemo(() => Object.entries(latestResult?.state.facts ?? {}), [latestResult]);
+  const facts = useMemo(() => allFacts.slice(0, 6), [allFacts]);
 
   async function ensureSession() {
     const current = await fetch("/api/session", { cache: "no-store" });
@@ -308,8 +351,15 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [history, sending]);
+    if (loading) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // 回到欢迎态时把视图带回顶部，否则会停在上一段对话的底部，标题被顶栏盖住。
+    if (!history.length) {
+      window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+      return;
+    }
+    bottomRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "end" });
+  }, [history, sending, loading]);
 
   async function submit(text = input): Promise<DecisionResult | null> {
     const clean = text.trim();
@@ -332,6 +382,7 @@ export default function Home() {
       return payload.result;
     } catch (error) {
       setHistory((items) => items.filter((item) => item.requestId !== requestId));
+      setInput(clean);
       setServiceError(error instanceof Error ? error.message : "现在暂时连不上，请稍后再试。");
       return null;
     } finally {
@@ -353,48 +404,66 @@ export default function Home() {
     submitRef.current = submit;
   });
   useEffect(() => {
-    if (!document.modelContext?.registerTool) return;
+    const modelContext = document.modelContext;
+    if (!modelContext?.registerTool) return;
     const name = "ask_chengchu_guide";
-    document.modelContext.registerTool({
-      name,
-      description: "向澄初 AI 导购提交一条中文商品咨询，并返回依据品牌资料和业务规则校验后的本轮决策。",
-      inputSchema: {
-        type: "object",
-        properties: { text: { type: "string", description: "顾客本轮要补充的需求、预算、肤质、顾虑或政策问题。", minLength: 1, maxLength: 600 } },
-        required: ["text"],
-        additionalProperties: false,
-      },
-      execute: async ({ text }) => {
-        const result = await submitRef.current(text ?? "");
-        return {
-          content: [{
-            type: "text",
-            text: result ? JSON.stringify({ action: result.action, reply: result.reply, recommendations: result.recommendations, totalFen: result.totalFen, limitations: result.limitations, conversationSkill: result.conversationPolicy?.taskSkill, renderSource: result.render?.source, versions: result.versions }) : JSON.stringify({ error: "这次没能给出可靠结果" }),
-          }],
-        };
-      },
-    });
-    return () => document.modelContext?.unregisterTool?.(name);
+    let cancelled = false;
+    // Register on the next tick so a StrictMode remount cannot leave a duplicate tool behind.
+    modelContext.unregisterTool?.(name);
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      const outcome = modelContext.registerTool({
+        name,
+        description: "向澄初 AI 导购提交一条中文商品咨询，并返回依据品牌资料和业务规则校验后的本轮决策。",
+        inputSchema: {
+          type: "object",
+          properties: { text: { type: "string", description: "顾客本轮要补充的需求、预算、肤质、顾虑或政策问题。", minLength: 1, maxLength: 600 } },
+          required: ["text"],
+          additionalProperties: false,
+        },
+        execute: async ({ text }) => {
+          const result = await submitRef.current(text ?? "");
+          return {
+            content: [{
+              type: "text",
+              text: result ? JSON.stringify({ action: result.action, reply: result.reply, recommendations: result.recommendations, totalFen: result.totalFen, limitations: result.limitations, conversationSkill: result.conversationPolicy?.taskSkill, renderSource: result.render?.source, versions: result.versions }) : JSON.stringify({ error: "这次没能给出可靠结果" }),
+            }],
+          };
+        },
+      }) as unknown;
+      // A hot reload can reuse the same document, so settle a rejected re-registration instead of leaking it.
+      if (outcome && typeof (outcome as Promise<unknown>).catch === "function") (outcome as Promise<unknown>).catch(() => undefined);
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      document.modelContext?.unregisterTool?.(name);
+    };
   }, []);
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <a className="brand" href="#main-conversation" aria-label="澄初 AI 金牌导购首页">
-          <span className="brand-mark" aria-hidden="true">澄</span>
+          <span className="brand-mark" aria-hidden="true"><GuidePortrait src="/guide-mark.png" /></span>
           <span><strong>澄初个人护理</strong><small>AI 金牌导购</small></span>
         </a>
         <div className="header-actions">
-          <span className="service-state"><i /> 商品资料已核对</span>
+          <span className="service-state" role="status" data-tone={serviceError ? "alert" : "ok"}>
+            <i aria-hidden="true" /> {serviceError ? "暂时连不上商品资料" : loading ? "正在连接商品资料" : "品牌资料已加载"}
+          </span>
           <PreferencesDrawer />
           <Button variant="ghost" className="reset-button" onClick={resetSession} disabled={loading || sending}><RotateCcw /> 从头聊</Button>
-          <EvidenceDrawer result={latestResult} />
+          <EvidenceDrawer result={latestResult} open={evidenceOpen} onOpenChange={setEvidenceOpen} />
         </div>
       </header>
 
       <div className="workspace">
         <aside className="case-sheet" aria-label="我记下的需求">
-          <h2>我记下的需求</h2>
+          <div className="aside-head">
+            <h2>我记下的需求</h2>
+            {allFacts.length ? <span className="aside-count">{allFacts.length} 项</span> : null}
+          </div>
           <p className="aside-lead">这里只放你说过、现在还算数的信息。</p>
           <div className="fact-stack">
             {facts.length ? facts.map(([field, raw]) => {
@@ -402,31 +471,51 @@ export default function Home() {
               return <div className="brief-fact" key={field}><span>{fieldLabels[field] ?? field}</span><strong>{displayValue(item.value, field)}</strong></div>;
             }) : <div className="empty-brief"><Sparkles aria-hidden="true" /><p>先说想找什么就好。我一次只问一个关键问题。</p></div>}
           </div>
+          {allFacts.length > facts.length ? (
+            <button className="aside-more" onClick={() => setEvidenceOpen(true)}>还有 {allFacts.length - facts.length} 项在“我参考了什么”里</button>
+          ) : null}
           <div className="privacy-note"><ShieldCheck aria-hidden="true" /><p>这次聊天会保留 24 小时。想换设备也沿用偏好，可以登录后在“我的偏好”里开启。</p></div>
         </aside>
 
         <section className="conversation" id="main-conversation" aria-busy={sending || loading}>
-          <div className="conversation-header">
-            <div><h1>说说你想找什么，我陪你慢慢挑</h1></div>
+          <div className={`conversation-header${!history.length && !loading ? " is-welcome" : ""}`}>
+            <div><h1><span>说说你想找什么，我陪你慢慢挑</span></h1></div>
             <span>{history.length ? `聊到第 ${history.length} 轮` : "刚开始"}</span>
           </div>
 
-          <div className="messages" aria-live="polite">
+          <div className={`messages${!history.length && !loading ? " messages-empty" : ""}`} aria-live="polite">
             {!history.length && !loading ? (
               <div className="welcome-block">
-                <p>嗨，我是澄初导购。你可以先说想找哪类、在意什么，或者哪里拿不准。我一次只问一个关键问题，陪你把选择慢慢缩小。</p>
-                <div className="starter-grid">
-                  {starters.map((starter) => <button key={starter} onClick={() => submit(starter)}>{starter}<ArrowUp aria-hidden="true" /></button>)}
+                <div className="greeter-row">
+                  <span className="greeter-mark"><GuidePortrait src="/guide-portrait.png" /></span>
+                  <p>嗨，我是小澄导购。你可以从需求、预算或顾虑讲起。我一次只问一个关键问题，只推荐有依据的选择，也会把拿不准的地方说清楚哒。</p>
+                </div>
+                <div className="starter-grid" aria-label="你可以这样开始">
+                  {starters.map((starter) => {
+                    const StarterIcon = starter.icon;
+                    return (
+                      <button key={starter.text} onClick={() => submit(starter.text)}>
+                        <span className="starter-icon" aria-hidden="true"><StarterIcon /></span>
+                        <span className="starter-copy"><strong>{starter.label}</strong><span>{starter.text}</span></span>
+                        <ArrowUp className="starter-arrow" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
-            {loading ? <div className="loading-line">正在接上刚才聊到的地方…</div> : null}
+            {loading ? (
+              <div className="loading-state" role="status" aria-label="正在接上刚才聊到的地方">
+                <span className="loading-avatar" />
+                <div><span /><span /><span /></div>
+              </div>
+            ) : null}
             {history.map((item, index) => (
               <div className="turn" key={item.requestId}>
                 <div className="user-message"><span>你</span><p>{item.text}</p></div>
                 {item.result ? (
                   <div className="assistant-message">
-                    <div className="advisor-avatar" aria-hidden="true">澄</div>
+                    <div className="advisor-avatar" aria-hidden="true"><GuidePortrait src="/guide-mark.png" /></div>
                     <div className="assistant-content">
                       <p>{item.result.reply}</p>
                       {index === history.length - 1 && item.result.action === "clarify" && item.result.questionOptions?.length ? (
@@ -438,23 +527,34 @@ export default function Home() {
                         </div>
                       ) : null}
                       <RecommendationRows result={item.result} />
-                      <button className="inline-evidence" onClick={() => setLatestResult(item.result)}>{item.result.evidence.length ? `核对了 ${item.result.evidence.length} 条资料 · 看看依据` : "看看这条回复的依据"}</button>
+                      <button className="inline-evidence" onClick={() => { setLatestResult(item.result); setEvidenceOpen(true); }}>{item.result.evidence.length ? `核对了 ${item.result.evidence.length} 条资料，看看依据` : "看看这条回复的依据"}</button>
                     </div>
                   </div>
-                ) : <div className="assistant-message"><div className="advisor-avatar">澄</div><div className="thinking-line"><i /><i /><i /><span>我在核对商品资料，稍等一下</span></div></div>}
+                ) : <div className="assistant-message"><div className="advisor-avatar" aria-hidden="true"><GuidePortrait src="/guide-mark.png" /></div><div className="thinking-line"><i /><i /><i /><span>我在核对商品资料，稍等一下</span></div></div>}
               </div>
             ))}
-            {serviceError ? <div className="service-error" role="alert"><strong>刚才没接上</strong><p>{serviceError} 前面聊过的内容还在，稍后再试就好。</p></div> : null}
-            <div ref={bottomRef} />
+            {serviceError ? <div className="service-error" role="alert"><strong>刚才没接上</strong><p>{serviceError} 你刚才输入的内容已放回输入框。</p></div> : null}
+            <div className="scroll-end" ref={bottomRef} />
           </div>
 
           <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
-            <label htmlFor="guide-input">你接着说</label>
-            <div className="composer-row">
-              <Textarea ref={inputRef} id="guide-input" value={input} maxLength={600} disabled={sending || loading} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); } }} placeholder="选项不合适，也可以直接说…" />
-              <Button type="submit" size="icon" aria-label="发送" disabled={!input.trim() || sending || loading}><ArrowUp /></Button>
+            <div className="composer-card">
+              {facts.length ? (
+                <div className="mobile-brief" aria-label="我记下的需求">
+                  {facts.map(([field, raw]) => {
+                    const item = raw as SourcedFact;
+                    return <span className="brief-chip" key={field}><span>{fieldLabels[field] ?? field}</span><strong>{displayValue(item.value, field)}</strong></span>;
+                  })}
+                  <button type="button" className="brief-chip brief-chip-more" onClick={() => setEvidenceOpen(true)}>全部依据</button>
+                </div>
+              ) : null}
+              <label htmlFor="guide-input">你接着说</label>
+              <div className="composer-row">
+                <Textarea ref={inputRef} id="guide-input" value={input} maxLength={600} disabled={sending || loading} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); } }} placeholder="选项不合适，也可以直接说…" />
+                <Button type="submit" size="icon" aria-label="发送" disabled={!input.trim() || sending || loading}><ArrowUp /></Button>
+              </div>
+              <div className="composer-meta"><span>Enter 发送 · Shift + Enter 换行</span><span>{input.length}/600</span></div>
             </div>
-            <div className="composer-meta"><span>Enter 发送 · Shift + Enter 换行</span><span>{input.length}/600</span></div>
           </form>
         </section>
       </div>
