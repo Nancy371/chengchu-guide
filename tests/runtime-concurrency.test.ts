@@ -135,7 +135,7 @@ test("expired predecessor is replayed locally before the new safety input", asyn
   assert.equal(second.result.action, "safety");
   assert.equal(second.result.decisionTrace?.versions.input, 2);
   assert.equal(second.result.decisionTrace?.eligibility.some((item) => item.status === "eligible"), false);
-  assert.equal(repo.session.state.facts.targetSku?.value, "P101");
+  assert.equal(repo.session.state.facts.targetSku?.value, undefined);
   assert.equal(repo.session.state.facts.stinging?.value, false);
   assert.equal(repo.session.state.facts.skinDamage?.value, true);
   gate.release();
@@ -391,4 +391,65 @@ test("requesting another option never repeats a displayed SKU", async () => {
   assert.deepEqual(alternative.recommendations, []);
   assert.match(alternative.reply, /已经展示完|没有适合直接推荐/);
   assert.deepEqual(alternative.purchaseTask?.displayedSkus, ["P102"]);
+});
+
+test("rejecting the current recommendation asks one reason then excludes that SKU", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "post-reject-1", "预算200，我是油皮，能接受香味，你帮我定一款洗面奶")).result;
+  assert.equal(first.action, "recommend");
+  assert.equal(first.purchaseTask?.currentRecommendation?.primarySku, "P102");
+
+  const rejected = (await agent.handleTurn("s", "post-reject-2", "不合适")).result;
+  assert.equal(rejected.action, "clarify");
+  assert.deepEqual(rejected.questionFields, ["rejectionReason"]);
+  assert.equal(rejected.questions.length, 1);
+  assert.deepEqual(rejected.recommendations, []);
+  assert.deepEqual(rejected.purchaseTask?.rejectedSkus?.map((item) => item.sku), ["P102"]);
+  assert.equal(rejected.purchaseTask?.decisionStage, "clarifying_rejection");
+
+  const direction = (await agent.handleTurn("s", "post-reject-3", "想换个方向")).result;
+  assert.equal(direction.recommendations.some((item) => item.sku === "P102"), false);
+  assert.equal(direction.candidateSkus.includes("P102"), false);
+});
+
+test("accepting the current recommendation confirms selection instead of replaying an old decision", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  const first = (await agent.handleTurn("s", "post-accept-1", "预算200，我是油皮，能接受香味，你帮我定一款洗面奶")).result;
+  const selected = (await agent.handleTurn("s", "post-accept-2", "合适")).result;
+  assert.equal(selected.action, "selection_confirmed");
+  assert.equal(selected.purchaseTask?.selectedSku, first.purchaseTask?.currentRecommendation?.primarySku);
+  assert.equal(selected.purchaseTask?.decisionStage, "selected");
+  assert.notEqual(selected.action, "price_list");
+});
+
+test("asking why or comparing products preserves the current goal without turning the SKU into a target", async () => {
+  const repo = new MemoryRepository();
+  const agent = runtime(repo);
+  await agent.handleTurn("s", "post-explain-1", "预算200，我是油皮，能接受香味，你帮我定一款洗面奶");
+  const explained = (await agent.handleTurn("s", "post-explain-2", "为什么不推荐 P101")).result;
+  assert.equal(explained.action, "product_explanation");
+  assert.deepEqual(explained.purchaseTask?.goal.categories, ["cleanser"]);
+  assert.equal(explained.state.facts.targetSku, undefined);
+  assert.equal(explained.purchaseTask?.currentRecommendation?.primarySku, "P102");
+
+  const compared = (await agent.handleTurn("s", "post-explain-3", "P101 和 P102 比呢")).result;
+  assert.equal(compared.action, "product_comparison");
+  assert.deepEqual(new Set(compared.candidateSkus), new Set(["P101", "P102"]));
+  assert.equal(compared.state.facts.targetSku, undefined);
+});
+
+test("a stale rejection reply cannot commit rejected or displayed product progress", async () => {
+  const repo = new MemoryRepository();
+  await runtime(repo).handleTurn("s", "stale-reject-1", "预算200，我是油皮，能接受香味，你帮我定一款洗面奶");
+  const gate = deferred();
+  const rejection = runtime(repo, { renderGate: gate }).handleTurn("s", "stale-reject-2", "不合适");
+  await until(() => repo.session.appliedInputVersion === 2);
+  const safety = await runtime(repo).handleTurn("s", "stale-reject-3", "我现在脸很疼");
+  assert.equal(safety.result.action, "safety");
+  gate.release();
+  assert.equal((await rejection).stale, true);
+  assert.equal(repo.session.result?.action, "safety");
+  assert.deepEqual(repo.session.result?.purchaseTask?.rejectedSkus ?? [], []);
 });

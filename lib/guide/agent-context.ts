@@ -4,7 +4,7 @@ import { effectiveStateView, fact, isStateField } from "./state";
 import { checkSafety } from "./tools";
 import { clarificationGoalKey } from "./clarification";
 import { rebuildPurchaseTask, stateForPurchaseTask } from "./purchase-task";
-import type { AgentContext, DecisionDraft, DecisionTrace, HabitMemory, ProductFit, SessionRecord, StateField, ToolObservation, UserState } from "./types";
+import type { AgentContext, DecisionDraft, DecisionTrace, HabitMemory, ProductFit, PurchaseTask, SessionRecord, StateField, ToolObservation, UserState } from "./types";
 
 function relevantHabits(state: UserState, memories: readonly HabitMemory[]): HabitMemory[] {
   const categories = fact<string[]>(state, "categories") ?? [];
@@ -22,9 +22,9 @@ function allowedActions(state: UserState, fits: ReadonlyArray<ProductFit> = []):
   return fits.some((fit) => fit.status === "eligible") ? ["search_products", "compare_products", "finalize"] : ["search_products"];
 }
 
-export function buildAgentContext(input: { session: SessionRecord; memories?: readonly HabitMemory[]; memoryVersion?: number; remainingTimeBudget?: number; previousResult?: SessionRecord["result"] }): AgentContext {
+export function buildAgentContext(input: { session: SessionRecord; memories?: readonly HabitMemory[]; memoryVersion?: number; remainingTimeBudget?: number; previousResult?: SessionRecord["result"]; purchaseTask?: PurchaseTask }): AgentContext {
   const checkpointState = structuredClone(input.session.state);
-  const purchaseTask = structuredClone(checkpointState.purchaseTask ?? input.previousResult?.purchaseTask ?? rebuildPurchaseTask(checkpointState));
+  const purchaseTask = structuredClone(input.purchaseTask ?? input.previousResult?.purchaseTask ?? checkpointState.purchaseTask ?? rebuildPurchaseTask(checkpointState));
   const state = stateForPurchaseTask(checkpointState, purchaseTask);
   const categories = fact<string[]>(state, "categories") ?? [];
   const storedSku = fact<string>(state, "targetSku");
@@ -32,8 +32,8 @@ export function buildAgentContext(input: { session: SessionRecord; memories?: re
   const intent = fact<string>(state, "intent");
   const policyTopics = fact<string[]>(state, "policyTopics") ?? [];
   const safety = checkSafety({ userState: state });
-  const type: AgentContext["goal"]["type"] = purchaseTask.turnAction.kind === "policy_interruption" || policyTopics.length ? "policy"
-    : purchaseTask.turnAction.kind === "price_interruption" || intent === "price" ? "price"
+  const type: AgentContext["goal"]["type"] = purchaseTask.turnAction.kind === "policy_interruption" || purchaseTask.turnAction.kind === "ask_about_product" && purchaseTask.turnAction.topic === "policy" || policyTopics.length ? "policy"
+    : purchaseTask.turnAction.kind === "price_interruption" || purchaseTask.turnAction.kind === "ask_about_product" && purchaseTask.turnAction.topic === "price" || intent === "price" ? "price"
       : purchaseTask.goal.kind !== "categories" || categories.length || targetSku ? "buy_product" : "unknown";
   return {
     goal: { type, categories, ...(targetSku ? { targetSku } : {}) },

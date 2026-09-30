@@ -10,7 +10,7 @@ import { D1GuideRepository } from "./repository";
 import { composeResult } from "./response";
 import { deterministicExtract, deterministicUnderstand, fact, isStateField } from "./state";
 import { verifiedState } from "./verified-state";
-import { askPurchaseQuestion, completePurchaseTask, updatePurchaseTask } from "./purchase-task";
+import { askPurchaseQuestion, checkpointPurchaseTask, completePurchaseTask, transitionPurchaseTask, type PurchaseTransition } from "./purchase-task";
 import type { AgentTrace, DecisionResult, FinalDecisionProposal, ModelAudit, SessionRecord, TurnUnderstanding } from "./types";
 
 const PREDECESSOR_TIMEOUT_MS = 12_000;
@@ -64,8 +64,8 @@ export class ConversationRuntime {
       if (Date.now() >= pending.created_at + PREDECESSOR_TIMEOUT_MS) {
         const priorTask = current.result?.purchaseTask ?? current.state.purchaseTask;
         const verified = await verifiedState.update({ currentState: current.state, userMessage: pending.text, pendingQuestion: priorTask?.pendingQuestion?.field });
-        const purchaseTask = updatePurchaseTask({ previous: priorTask, previousState: current.state, currentState: verified.state, understanding: verified.understanding, userMessage: pending.text });
-        const recovered = await this.repository.commitState(sessionId, current.appliedInputVersion + 1, current.stateVersion, { ...verified.state, purchaseTask });
+        const transition = transitionPurchaseTask({ previous: priorTask, previousState: current.state, currentState: verified.state, understanding: verified.understanding, userMessage: pending.text, inputVersion: current.appliedInputVersion + 1 });
+        const recovered = await this.repository.commitState(sessionId, current.appliedInputVersion + 1, current.stateVersion, { ...verified.state, purchaseTask: checkpointPurchaseTask(priorTask, transition) });
         if (recovered) await this.repository.failTurn(sessionId, pending.request_id, staleResult(recovered));
         continue;
       }
@@ -85,6 +85,7 @@ export class ConversationRuntime {
     const initialPending = begin.previousResult?.purchaseTask?.pendingQuestion?.field ?? begin.previousResult?.clarification?.field ?? begin.previousResult?.questionFields[0];
     let understanding: TurnUnderstanding = deterministicUnderstand(text, isStateField(initialPending) ? initialPending : undefined);
     let checkpoint: SessionRecord | null = null;
+    let purchaseTransition: PurchaseTransition | undefined;
     try {
       const predecessor = await this.awaitPredecessors(sessionId, begin.inputVersion, userId);
       if (!predecessor) {
@@ -104,8 +105,10 @@ export class ConversationRuntime {
         extract: (message, state, pendingQuestion) => this.model.extract(message, state, pendingQuestion) });
       if (verified.audit.model) audits.push(verified.audit.model);
       understanding = verified.understanding;
-      const purchaseTask = updatePurchaseTask({ previous: previousResult?.purchaseTask ?? predecessor.state.purchaseTask, previousState: predecessor.state, currentState: verified.state, understanding, userMessage: text });
-      const state = { ...verified.state, purchaseTask };
+      const priorTask = previousResult?.purchaseTask ?? predecessor.state.purchaseTask;
+      purchaseTransition = transitionPurchaseTask({ previous: priorTask, previousState: predecessor.state, currentState: verified.state, understanding, userMessage: text, inputVersion: begin.inputVersion });
+      const purchaseTask = purchaseTransition.task;
+      const state = { ...verified.state, purchaseTask: checkpointPurchaseTask(priorTask, purchaseTransition) };
       const updatedFields = verified.audit.updatedFields;
 
       checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, predecessor.stateVersion, state);
@@ -120,7 +123,8 @@ export class ConversationRuntime {
       const memoryProfile = userId
         ? await this.repository.getMemoryProfile(userId)
         : { enabled: false, version: 0, memories: [] };
-      let agentContext = buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version, previousResult });
+      let agentContext = buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version, previousResult, purchaseTask });
+      agentContext = { ...agentContext, effectiveRejectedSkus: purchaseTransition.effectiveRejectedSkus, ...(purchaseTransition.nextRequiredAction ? { nextRequiredTaskAction: purchaseTransition.nextRequiredAction } : {}) };
       const deterministic = agentContext.hardConstraints.safety === "active_risk"
         ? safetyDecision(agentContext.userState as SessionRecord["state"])
         : decide(agentContext.userState as SessionRecord["state"], memoryProfile.memories);
@@ -144,9 +148,32 @@ export class ConversationRuntime {
       }
       if (proposal) {
         fallbackReason = "USER_DECLINED_REQUIRED_QUESTION";
-      } else if (deterministic.action === "safety" || reject || ["price_answer", "policy_unknown", "budget_conflict", "unavailable"].includes(deterministic.action) || agentContext.hardConstraints.safety === "unclear") {
+      } else if (deterministic.action === "safety" || reject || agentContext.hardConstraints.safety === "unclear") {
         agentContext = { ...agentContext, observations: [{ order: 1, tool: "check_safety", outcome: agentContext.hardConstraints.safety }], completedActions: ["check_safety"] };
         proposal = { kind: "direct", source: "rule", reason: reject ? "USER_REJECTED" : deterministic.routeReason, ...(reject && deterministic.action !== "safety" ? { action: "close" as const } : {}) };
+      } else if (agentContext.purchaseTask.turnAction.kind === "reject_current" && purchaseTransition.nextRequiredAction === "clarify_rejection_reason" && purchaseTransition.commit.rejected[0]) {
+        proposal = { kind: "clarify_rejection", sku: purchaseTransition.commit.rejected[0].sku };
+      } else if (["accept_current", "select_product"].includes(agentContext.purchaseTask.turnAction.kind) && purchaseTransition.commit.selectedSku) {
+        agentContext = prepareDeterministicCandidates(agentContext);
+        const fit = agentContext.productFits.find((item) => item.sku === purchaseTransition?.commit.selectedSku);
+        proposal = fit ? { kind: "confirm_selection", sku: fit.sku, evidenceIds: fit.evidence.map((item) => item.id) } : { kind: "direct", source: "rule", reason: "SELECTION_NOT_ELIGIBLE", action: "unavailable" };
+      } else if (agentContext.purchaseTask.turnAction.kind === "ask_why_not") {
+        agentContext = prepareDeterministicCandidates(agentContext);
+        const sku = agentContext.purchaseTask.turnAction.mentions?.find((item) => item.role === "inquiry")?.sku;
+        const fit = sku ? agentContext.candidateProducts.find((item) => item.sku === sku) : undefined;
+        proposal = fit ? { kind: "explain_product", sku: fit.sku, evidenceIds: fit.evidence.map((item) => item.id) } : { kind: "direct", source: "rule", reason: "EXPLANATION_TARGET_UNKNOWN", action: "unavailable" };
+      } else if (agentContext.purchaseTask.turnAction.kind === "compare_with_previous") {
+        agentContext = prepareDeterministicCandidates(agentContext);
+        const explicit = agentContext.purchaseTask.turnAction.mentions?.filter((item) => item.role === "comparison").map((item) => item.sku) ?? [];
+        const history = agentContext.purchaseTask.recommendationHistory ?? [];
+        const currentSku = agentContext.purchaseTask.currentRecommendation?.primarySku;
+        const previousSku = [...history].reverse().map((item) => item.primarySku).find((sku) => sku !== currentSku);
+        const skus = explicit.length >= 2 ? explicit.slice(0, 2) : currentSku && previousSku ? [currentSku, previousSku] : [];
+        const fits = skus.map((sku) => agentContext.candidateProducts.find((item) => item.sku === sku)).filter(Boolean);
+        proposal = fits.length === 2 ? { kind: "compare_products", skus, evidenceIds: fits.flatMap((fit) => fit!.evidence.map((item) => item.id)) } : { kind: "direct", source: "rule", reason: "COMPARISON_TARGET_UNKNOWN", action: "unavailable" };
+      } else if (["price_answer", "policy_unknown", "budget_conflict", "unavailable"].includes(deterministic.action)) {
+        agentContext = { ...agentContext, observations: [{ order: 1, tool: "check_safety", outcome: agentContext.hardConstraints.safety }], completedActions: ["check_safety"] };
+        proposal = { kind: "direct", source: "rule", reason: deterministic.routeReason };
       } else if (agentContext.purchaseTask.goal.kind === "unsupported_skincare_gift_box") {
         proposal = { kind: "direct", source: "rule", reason: "UNSUPPORTED_GIFT_BOX", action: "unavailable" };
       } else if (agentContext.purchaseTask.budget.status === "declined") {
@@ -177,7 +204,7 @@ export class ConversationRuntime {
       }
       if (!proposal) {
         if (agentContext.hardConstraints.safety !== "active_risk" && agentContext.hardConstraints.safety !== "unclear") {
-          agentContext = prepareDeterministicCandidates(buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version, previousResult }));
+          agentContext = prepareDeterministicCandidates({ ...buildAgentContext({ session: checkpoint, memories: memoryProfile.memories, memoryVersion: memoryProfile.version, previousResult, purchaseTask }), effectiveRejectedSkus: purchaseTransition.effectiveRejectedSkus, ...(purchaseTransition.nextRequiredAction ? { nextRequiredTaskAction: purchaseTransition.nextRequiredAction } : {}) });
           proposal = deterministicProposal(agentContext, fallbackReason ?? "MODEL_UNAVAILABLE");
         }
         if (!proposal) proposal = { kind: "direct", source: "fallback", reason: fallbackReason ?? "MODEL_UNAVAILABLE" };
@@ -268,7 +295,7 @@ export class ConversationRuntime {
         : ["price_answer", "policy_unknown", "comparison_only"].includes(composed.action) && agentContext.clarification?.goalKey === clarificationGoalKey(checkpoint.state)
           ? agentContext.clarification : undefined;
       const taskWithQuestion = isStateField(askedField) ? askPurchaseQuestion(agentContext.purchaseTask as typeof purchaseTask, askedField, draft.routeReason) : agentContext.purchaseTask as typeof purchaseTask;
-      const completedTask = completePurchaseTask(taskWithQuestion, composed);
+      const completedTask = completePurchaseTask(taskWithQuestion, composed, purchaseTransition);
       const result = { ...composed, ...(clarification ? { clarification } : {}), purchaseTask: completedTask };
       const committed = await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, result);
       if (!committed) {
@@ -302,13 +329,13 @@ export class ConversationRuntime {
         const fallbackPending = priorTask?.pendingQuestion?.field ?? begin.previousResult?.questionFields[0];
         const verified = await verifiedState.update({ currentState: current.state, userMessage: text, pendingQuestion: isStateField(fallbackPending) ? fallbackPending : undefined });
         understanding = verified.understanding;
-        const purchaseTask = updatePurchaseTask({ previous: priorTask, previousState: current.state, currentState: verified.state, understanding, userMessage: text });
-        checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, current.stateVersion, { ...verified.state, purchaseTask });
+        purchaseTransition = transitionPurchaseTask({ previous: priorTask, previousState: current.state, currentState: verified.state, understanding, userMessage: text, inputVersion: begin.inputVersion });
+        checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, current.stateVersion, { ...verified.state, purchaseTask: checkpointPurchaseTask(priorTask, purchaseTransition) });
       }
       const latest = await this.repository.getSession(sessionId, userId);
       if (checkpoint && latest?.inputVersion === begin.inputVersion && latest.appliedInputVersion === begin.inputVersion) {
         const latestMemory = userId ? await this.repository.getMemoryProfile(userId) : { version: 0, memories: [] };
-        const fallbackContext = buildAgentContext({ session: latest, memories: latestMemory.memories, memoryVersion: latestMemory.version });
+        const fallbackContext = buildAgentContext({ session: latest, memories: latestMemory.memories, memoryVersion: latestMemory.version, purchaseTask: purchaseTransition?.task });
         const authorized = authorizeFinalDecision({ proposal: { kind: "direct", source: "fallback", reason: "RUNTIME_EXCEPTION" }, context: fallbackContext, current: { input: latest.appliedInputVersion, state: latest.stateVersion, knowledge: KNOWLEDGE_VERSION, memory: latestMemory.version }, signals: understanding.signals });
         if (authorized.status !== "APPROVED" || !authorized.decision) throw error;
         const fallbackComposed = composeResult(authorized.decision, checkpoint.state, audits,
@@ -316,7 +343,7 @@ export class ConversationRuntime {
           { signals: understanding.signals, lifestyle: understanding.lifestyle, previousResult: begin.previousResult,
             updatedFields: understanding.delta.updates.map((item) => item.field), renderFallbackReason: "runtime_fallback", decisionTrace: decisionTrace(withDecision(fallbackContext, authorized.decision)),
             agentTrace: { planner: [], observations: [], authorization: authorized.status, authorizationReason: authorized.reason, fallbackReason: "RUNTIME_EXCEPTION", versions: fallbackContext.versions } });
-        const fallbackTask = completePurchaseTask(fallbackContext.purchaseTask, fallbackComposed);
+        const fallbackTask = completePurchaseTask(fallbackContext.purchaseTask, fallbackComposed, purchaseTransition);
         const fallback = { ...fallbackComposed, purchaseTask: fallbackTask };
         if (await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, fallback)) {
           return { result: fallback, duplicate: false, stale: false };

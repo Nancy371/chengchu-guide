@@ -46,7 +46,7 @@ test("a model cannot falsify safety or skin type using an unrelated literal quot
 });
 
 test("switching category clears an old SKU and decision ignores incompatible stored SKU", () => {
-  const first = stateFrom("P101 多少钱");
+  const first = stateFrom("想买 P101");
   const switched = applyDelta(first, deterministicExtract("我是干皮，现在只买保湿面霜"));
   assert.equal(fact(switched, "targetSku"), undefined);
   assert.equal(switched.history.some((item) => item.field === "targetSku" && item.value === "P101"), true);
@@ -76,7 +76,7 @@ test("current pain stops recommendation", () => {
 });
 
 test("unknown gift policy does not erase verified manual price", () => {
-  const result = decide(stateFrom("P101 多少钱？有赠品吗"));
+  const result = decide(stateFrom("想买 P101，有赠品吗"));
   assert.equal(result.action, "policy_unknown");
   assert.equal(result.recommendations[0]?.priceFen, 16900);
   assert.equal(result.evidence.some((item) => item.id === "price:P101"), true);

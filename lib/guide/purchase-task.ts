@@ -80,7 +80,9 @@ function mentionedSkus(action: PurchaseTurnAction, role: NonNullable<PurchaseTur
 
 export function transitionPurchaseTask(input: { previous?: PurchaseTask; previousState: UserState; currentState: UserState; understanding: TurnUnderstanding; userMessage: string; inputVersion?: number }): PurchaseTransition {
   const previous = normalizedTask(structuredClone(input.previous ?? input.previousState.purchaseTask ?? rebuildPurchaseTask(input.previousState)));
-  const action = input.understanding.purchaseAction ?? classifyPurchaseAction(input.userMessage, previous.pendingQuestion?.field);
+  let action = input.understanding.purchaseAction ?? classifyPurchaseAction(input.userMessage, previous.pendingQuestion?.field);
+  if (previous.pendingTaskQuestion?.field === "rejectionReason" && !["end", "switch_goal", "select_product"].includes(action.kind)) action = { kind: "answer_question", quote: input.userMessage, mentions: action.mentions };
+  if (previous.pendingTaskQuestion?.field === "selectionChoice" && (input.understanding.skuMentions?.length || action.kind === "accept_current")) action = { kind: "select_product", quote: input.userMessage, mentions: input.understanding.skuMentions };
   const proposedGoal = action.kind === "price_interruption" || action.kind === "policy_interruption" || action.kind === "request_alternative" || action.kind === "decline_answer" || action.kind === "end"
     ? null : explicitGoal(input.understanding, input.userMessage, previous.goal.version);
   const changedGoal = proposedGoal && proposedGoal.key !== previous.goal.key;
@@ -143,7 +145,14 @@ export function transitionPurchaseTask(input: { previous?: PurchaseTask; previou
       selectedNow = currentRecommendation.primarySku;
     }
   } else if (!changedGoal && action.kind === "select_product") {
-    selectedNow = mentionedSkus(action, "selection")[0];
+    selectedNow = mentionedSkus(action, "selection")[0] ?? action.mentions?.[0]?.sku ?? (action.kind === "select_product" && previous.pendingTaskQuestion?.field === "selectionChoice" && !/\bP[123]\d{2}\b/i.test(input.userMessage) ? currentRecommendation?.primarySku : undefined);
+    if (selectedNow) pendingTaskQuestion = undefined;
+  } else if (!changedGoal && action.kind === "answer_question" && previous.pendingTaskQuestion?.field === "rejectionReason" && previous.pendingTaskQuestion.sku) {
+    const reason = rejectionReason(input.userMessage);
+    rejectedNow.push({ sku: previous.pendingTaskQuestion.sku, quote: input.userMessage, reason: reason === "unknown" ? "other" : reason, turn: input.currentState.turn });
+    pendingTaskQuestion = undefined;
+    decisionStage = "discovering";
+    clearCurrentRecommendation = true;
   }
 
   const task: PurchaseTask = {
@@ -173,6 +182,25 @@ export function updatePurchaseTask(input: { previous?: PurchaseTask; previousSta
   return transitionPurchaseTask(input).task;
 }
 
+/**
+ * State checkpoints keep verified user facts and goal changes, but response-bound
+ * progress remains on the last committed result until a reply is committed.
+ */
+export function checkpointPurchaseTask(previous: PurchaseTask | undefined, transition: PurchaseTransition): PurchaseTask {
+  const prior = normalizedTask(previous ?? rebuildPurchaseTask({ facts: {}, history: [], turn: 0 }));
+  const changedGoal = prior.goal.key !== transition.task.goal.key;
+  return {
+    ...transition.task,
+    decisionStage: changedGoal ? "discovering" : prior.decisionStage,
+    ...(changedGoal || !prior.currentRecommendation ? { currentRecommendation: undefined } : { currentRecommendation: prior.currentRecommendation }),
+    recommendationHistory: changedGoal ? [] : prior.recommendationHistory ?? [],
+    ...(changedGoal || !prior.selectedSku ? { selectedSku: undefined } : { selectedSku: prior.selectedSku }),
+    rejectedSkus: changedGoal ? [] : prior.rejectedSkus ?? [],
+    ...(prior.pendingTaskQuestion ? { pendingTaskQuestion: prior.pendingTaskQuestion } : { pendingTaskQuestion: undefined }),
+    lastCommittedAction: prior.lastCommittedAction,
+  };
+}
+
 export function stateForPurchaseTask(state: UserState, task: PurchaseTask): UserState {
   const copy = structuredClone(state);
   const facts = { ...copy.facts };
@@ -180,7 +208,8 @@ export function stateForPurchaseTask(state: UserState, task: PurchaseTask): User
   if (task.goal.kind === "categories") {
     if (task.goal.categories.length) facts.categories = sourced("categories", task.goal.categories);
     else delete facts.categories;
-    const interruptedSku = ["price_interruption", "policy_interruption"].includes(task.turnAction.kind) ? fact<string>(state, "targetSku") : undefined;
+    const mentionedInquiry = task.turnAction.kind === "ask_about_product" ? task.turnAction.mentions?.find((item) => item.role === "inquiry")?.sku : undefined;
+    const interruptedSku = mentionedInquiry ?? (["price_interruption", "policy_interruption"].includes(task.turnAction.kind) ? fact<string>(state, "targetSku") : undefined);
     if (task.goal.targetSku || interruptedSku) facts.targetSku = sourced("targetSku", task.goal.targetSku ?? interruptedSku!);
     else delete facts.targetSku;
   } else {

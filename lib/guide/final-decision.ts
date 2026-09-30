@@ -20,6 +20,10 @@ export function parseFinalProposal(raw: unknown): FinalDecisionProposal | null {
   if (value.kind === "price_list" && Array.isArray(value.skus) && value.skus.length >= 1 && value.skus.length <= 6 && value.skus.every((sku) => typeof sku === "string") && new Set(value.skus).size === value.skus.length && Array.isArray(value.evidenceIds) && value.evidenceIds.every((id) => typeof id === "string")) {
     return { kind: "price_list", skus: value.skus, evidenceIds: value.evidenceIds as string[] };
   }
+  if (value.kind === "confirm_selection" && typeof value.sku === "string" && Array.isArray(value.evidenceIds) && value.evidenceIds.every((id) => typeof id === "string")) return { kind: "confirm_selection", sku: value.sku, evidenceIds: value.evidenceIds as string[] };
+  if (value.kind === "clarify_rejection" && typeof value.sku === "string") return { kind: "clarify_rejection", sku: value.sku };
+  if (value.kind === "explain_product" && typeof value.sku === "string" && Array.isArray(value.evidenceIds) && value.evidenceIds.every((id) => typeof id === "string")) return { kind: "explain_product", sku: value.sku, evidenceIds: value.evidenceIds as string[] };
+  if (value.kind === "compare_products" && Array.isArray(value.skus) && value.skus.length === 2 && value.skus.every((sku) => typeof sku === "string") && new Set(value.skus).size === 2 && Array.isArray(value.evidenceIds) && value.evidenceIds.every((id) => typeof id === "string")) return { kind: "compare_products", skus: value.skus, evidenceIds: value.evidenceIds as string[] };
   if (value.kind === "direct" && (value.source === "rule" || value.source === "fallback") && typeof value.reason === "string" && (value.action === undefined || value.action === "close" || value.action === "unavailable")) return { kind: "direct", source: value.source, reason: value.reason, ...(value.action ? { action: value.action } : {}) };
   return null;
 }
@@ -67,6 +71,38 @@ export function authorizeFinalDecision(input: { proposal: unknown; context: Agen
       if (quote.withinBudget === false) return { status: "REJECTED", reason: "BUDGET_EXCEEDED" };
     }
     return { status: "APPROVED", reason: proposal.source === "fallback" ? "DETERMINISTIC_FALLBACK" : "DETERMINISTIC_RULE", decision: draft };
+  }
+  if (["confirm_selection", "clarify_rejection", "explain_product", "compare_products"].includes(proposal.kind) && safety.status === "active_risk") return { status: "APPROVED", reason: "SAFETY_STOP", decision: safetyDecision(state) };
+  if (["confirm_selection", "explain_product", "compare_products"].includes(proposal.kind) && safety.status === "unclear") return { status: "FALLBACK_REQUIRED", reason: "SAFETY_UNCLEAR" };
+  if (proposal.kind === "clarify_rejection") {
+    if (context.purchaseTask.turnAction.kind !== "reject_current" || context.nextRequiredTaskAction !== "clarify_rejection_reason" || !context.effectiveRejectedSkus?.includes(proposal.sku)) return { status: "REJECTED", reason: "REJECTION_NOT_CURRENT" };
+    return { status: "APPROVED", reason: "REJECTION_REASON_REQUIRED", decision: { action: "clarify", route: "direct", routeReason: "用户否定了当前推荐，需要确认哪一点不合适", questionFields: ["rejectionReason"], candidateSkus: [], recommendations: [], productFits: [...context.productFits], evidence: [], limitations: [] } };
+  }
+  if (proposal.kind === "confirm_selection") {
+    const fit = context.productFits.find((item) => item.sku === proposal.sku && item.status === "eligible" && item.hardConstraintMatch && item.budgetStatus !== "over");
+    const expectedSku = context.purchaseTask.turnAction.kind === "accept_current" ? context.purchaseTask.currentRecommendation?.primarySku
+      : context.purchaseTask.turnAction.mentions?.find((item) => item.role === "selection")?.sku ?? context.purchaseTask.turnAction.mentions?.[0]?.sku;
+    if (!fit || expectedSku !== proposal.sku || context.effectiveRejectedSkus?.includes(proposal.sku)) return { status: "REJECTED", reason: "SELECTION_NOT_AUTHORIZED" };
+    const allowed = new Set(fit.evidence.map((item) => item.id));
+    if (proposal.evidenceIds.some((id) => !allowed.has(id))) return { status: "REJECTED", reason: "EVIDENCE_NOT_AUTHORIZED" };
+    return { status: "APPROVED", reason: "SELECTION_CONFIRMED", decision: { action: "selection_confirmed", route: "direct", routeReason: "用户确认当前推荐商品", questionFields: [], candidateSkus: [fit.sku], recommendations: [recommendation(fit)], productFits: [...context.productFits], evidence: fit.evidence, limitations: [] } };
+  }
+  if (proposal.kind === "explain_product") {
+    if (context.purchaseTask.turnAction.kind !== "ask_why_not") return { status: "REJECTED", reason: "EXPLANATION_NOT_REQUESTED" };
+    const fit = context.candidateProducts.find((item) => item.sku === proposal.sku);
+    if (!fit) return { status: "REJECTED", reason: "SKU_NOT_AUTHORIZED" };
+    const allowed = new Set(fit.evidence.map((item) => item.id));
+    if (!proposal.evidenceIds.length || proposal.evidenceIds.some((id) => !allowed.has(id))) return { status: "REJECTED", reason: "EVIDENCE_NOT_AUTHORIZED" };
+    return { status: "APPROVED", reason: "PRODUCT_EXPLANATION", decision: { action: "product_explanation", route: "direct", routeReason: fit.status === "excluded" ? fit.blockers.join("；") || "该商品未通过当前约束" : "该商品可选，但当时的主推顺序不同", questionFields: [], candidateSkus: [fit.sku], recommendations: [], productFits: [...context.candidateProducts], evidence: fit.evidence.filter((item) => proposal.evidenceIds.includes(item.id)), limitations: fit.blockers } };
+  }
+  if (proposal.kind === "compare_products") {
+    if (context.purchaseTask.turnAction.kind !== "compare_with_previous") return { status: "REJECTED", reason: "COMPARISON_NOT_REQUESTED" };
+    const fits = proposal.skus.map((sku) => context.candidateProducts.find((item) => item.sku === sku));
+    if (fits.some((fit) => !fit)) return { status: "REJECTED", reason: "SKU_NOT_AUTHORIZED" };
+    const evidence = (fits as ProductFit[]).flatMap((fit) => fit.evidence);
+    const allowed = new Set(evidence.map((item) => item.id));
+    if (!proposal.evidenceIds.length || proposal.evidenceIds.some((id) => !allowed.has(id))) return { status: "REJECTED", reason: "EVIDENCE_NOT_AUTHORIZED" };
+    return { status: "APPROVED", reason: "USER_REQUESTED_COMPARISON", decision: { action: "product_comparison", route: "direct", routeReason: "用户要求比较当前与上一款商品", questionFields: [], candidateSkus: [...proposal.skus], recommendations: [], productFits: [...context.candidateProducts], evidence: evidence.filter((item) => proposal.evidenceIds.includes(item.id)), limitations: [], pricingMode: "alternatives" } };
   }
   if (safety.status === "active_risk") return { status: "FALLBACK_REQUIRED", reason: "SAFETY_STOP" };
   if (proposal.kind === "comparison_only") {

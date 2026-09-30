@@ -244,6 +244,9 @@ export interface ModelAudit {
 
 export type DecisionAction =
   | "clarify"
+  | "selection_confirmed"
+  | "product_explanation"
+  | "product_comparison"
   | "comparison_only"
   | "recommend"
   | "price_list"
@@ -331,7 +334,9 @@ export interface AgentContext {
   candidateProducts: ReadonlyArray<ProductFit>;
   rawCandidateSkus: ReadonlyArray<string>;
   productFits: ReadonlyArray<ProductFit>;
-  rejectedProducts: ReadonlyArray<{ sku: string; reason: string; stage: "safety" | "eligibility" | "hard_constraint" | "budget" | "already_displayed" }>;
+  rejectedProducts: ReadonlyArray<{ sku: string; reason: string; stage: "safety" | "eligibility" | "hard_constraint" | "budget" | "already_displayed" | "user_rejected" }>;
+  effectiveRejectedSkus?: ReadonlyArray<string>;
+  nextRequiredTaskAction?: "clarify_rejection_reason" | "choose_between_recommendations";
   candidateEvaluation?: CandidateEvaluation;
   hardConstraints: { safety: "active_risk" | "unclear" | "explicitly_stable" | "not_provided"; budgetStatus: PurchaseTask["budget"]["status"]; budgetFen?: number; fragranceFree: boolean };
   softPreferences: { skinType?: string; fragrance?: string; concern?: string };
@@ -359,6 +364,10 @@ export type FinalDecisionProposal =
   | { kind: "ask"; field: StateField; questionGoal: string; evidenceGap: string }
   | { kind: "comparison_only"; skus: string[]; evidenceIds: string[]; field: StateField }
   | { kind: "price_list"; skus: string[]; evidenceIds: string[] }
+  | { kind: "confirm_selection"; sku: string; evidenceIds: string[] }
+  | { kind: "clarify_rejection"; sku: string }
+  | { kind: "explain_product"; sku: string; evidenceIds: string[] }
+  | { kind: "compare_products"; skus: string[]; evidenceIds: string[] }
   | { kind: "direct"; source: "rule" | "fallback"; reason: string; action?: "close" | "unavailable" };
 
 export interface FinalAuthorizationResult {

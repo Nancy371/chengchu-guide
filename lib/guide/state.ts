@@ -214,9 +214,9 @@ export function classifySkuMentions(text: string): SkuMention[] {
     let role: SkuMention["role"] = "target";
     if (comparing) role = "comparison";
     else if (/不要|不选|不合适|不喜欢|太贵|排除/.test(around)) role = "rejection";
-    else if (/就要|要它|选它|选择|买它|买P|定P|还是P/.test(around)) role = "selection";
+    else if (/就要|要它|选它|选择|买它|定P|还是P/.test(around)) role = "selection";
     else if (/为什么|怎么|多少钱|价格|售价|贵不贵|介绍|说说|了解|适合吗|推荐吗/.test(compact)) role = "inquiry";
-    else if (!/(?:想买|我要|要买|考虑|换成|改看|看看|选)/.test(compact)) role = "inquiry";
+    else if (!/(?:想买|想看|我要|要买|考虑|换成|改看|看看|选)/.test(compact)) role = "inquiry";
     return { sku, quote: sku, role };
   });
 }
