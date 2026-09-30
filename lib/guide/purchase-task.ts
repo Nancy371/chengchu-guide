@@ -1,6 +1,6 @@
 import { PRODUCTS_BY_SKU } from "./catalog";
 import { classifyPurchaseAction, fact } from "./state";
-import type { DecisionResult, Product, PurchaseGoal, PurchaseTask, StateField, TurnUnderstanding, UserState } from "./types";
+import type { DecisionResult, Product, PurchaseGoal, PurchaseTask, PurchaseTurnAction, StateField, TurnUnderstanding, UserState } from "./types";
 
 const productCategories = new Set<Product["category"]>(["cleanser", "serum", "moisturizer", "travel"]);
 
@@ -22,7 +22,19 @@ export function rebuildPurchaseTask(state: UserState): PurchaseTask {
     displayedSkus: [],
     turnAction: { kind: "continue", quote: "" },
     budget: budgetFen === undefined ? { status: "unknown", goalVersion: categories.length || targetSku ? 1 : 0 } : { status: "limited", fen: budgetFen, goalVersion: categories.length || targetSku ? 1 : 0 },
+    decisionStage: "discovering",
+    recommendationHistory: [],
+    rejectedSkus: [],
     updatedTurn: state.turn,
+  };
+}
+
+function normalizedTask(task: PurchaseTask): PurchaseTask {
+  return {
+    ...task,
+    decisionStage: task.decisionStage ?? (task.selectedSku ? "selected" : task.currentRecommendation ? "recommended" : "discovering"),
+    recommendationHistory: task.recommendationHistory ?? [],
+    rejectedSkus: task.rejectedSkus ?? [],
   };
 }
 
@@ -40,8 +52,34 @@ function explicitGoal(understanding: TurnUnderstanding, text: string, currentVer
   return null;
 }
 
-export function updatePurchaseTask(input: { previous?: PurchaseTask; previousState: UserState; currentState: UserState; understanding: TurnUnderstanding; userMessage: string }): PurchaseTask {
-  const previous = structuredClone(input.previous ?? input.previousState.purchaseTask ?? rebuildPurchaseTask(input.previousState));
+export interface PurchaseTransition {
+  task: PurchaseTask;
+  effectiveRejectedSkus: string[];
+  nextRequiredAction?: "clarify_rejection_reason" | "choose_between_recommendations";
+  commit: {
+    action: PurchaseTurnAction;
+    rejected: NonNullable<PurchaseTask["rejectedSkus"]>;
+    selectedSku?: string;
+    clearCurrentRecommendation?: boolean;
+  };
+}
+
+function rejectionReason(text: string): NonNullable<PurchaseTask["rejectedSkus"]>[number]["reason"] {
+  const compact = text.replace(/\s+/g, "");
+  if (/贵|价格|预算|价位/.test(compact)) return "price";
+  if (/香味|味道|香气/.test(compact)) return "fragrance";
+  if (/紧绷|拔干|清洁感|洗感|黏|质地|肤感/.test(compact)) return "sensory";
+  if (/换个方向|不是这个方向|想看别的/.test(compact)) return "direction";
+  if (/因为|原因是|主要是/.test(compact)) return "other";
+  return "unknown";
+}
+
+function mentionedSkus(action: PurchaseTurnAction, role: NonNullable<PurchaseTurnAction["mentions"]>[number]["role"]): string[] {
+  return [...new Set((action.mentions ?? []).filter((item) => item.role === role).map((item) => item.sku))];
+}
+
+export function transitionPurchaseTask(input: { previous?: PurchaseTask; previousState: UserState; currentState: UserState; understanding: TurnUnderstanding; userMessage: string; inputVersion?: number }): PurchaseTransition {
+  const previous = normalizedTask(structuredClone(input.previous ?? input.previousState.purchaseTask ?? rebuildPurchaseTask(input.previousState)));
   const action = input.understanding.purchaseAction ?? classifyPurchaseAction(input.userMessage, previous.pendingQuestion?.field);
   const proposedGoal = action.kind === "price_interruption" || action.kind === "policy_interruption" || action.kind === "request_alternative" || action.kind === "decline_answer" || action.kind === "end"
     ? null : explicitGoal(input.understanding, input.userMessage, previous.goal.version);
@@ -51,12 +89,24 @@ export function updatePurchaseTask(input: { previous?: PurchaseTask; previousSta
   let questionCounts = previous.questionCounts ?? {};
   let displayedSkus = previous.displayedSkus;
   let budget = previous.budget;
+  let decisionStage = previous.decisionStage;
+  let currentRecommendation = previous.currentRecommendation;
+  let recommendationHistory = previous.recommendationHistory ?? [];
+  let selectedSku = previous.selectedSku;
+  let rejectedSkus = previous.rejectedSkus ?? [];
+  let pendingTaskQuestion = previous.pendingTaskQuestion;
 
   if (changedGoal) {
     pendingQuestion = undefined;
     questionCounts = {};
     displayedSkus = [];
     budget = { status: "unknown", goalVersion: nextGoal.version };
+    decisionStage = "discovering";
+    currentRecommendation = undefined;
+    recommendationHistory = [];
+    selectedSku = undefined;
+    rejectedSkus = [];
+    pendingTaskQuestion = undefined;
   }
   const budgetUpdate = input.understanding.delta.updates.find((item) => item.field === "budget")?.value;
   if (typeof budgetUpdate === "number") budget = { status: "limited", fen: budgetUpdate, goalVersion: nextGoal.version };
@@ -68,7 +118,59 @@ export function updatePurchaseTask(input: { previous?: PurchaseTask; previousSta
   if (action.kind === "decline_answer") pendingQuestion = undefined;
   if (action.kind === "end") pendingQuestion = undefined;
 
-  return { goal: nextGoal, ...(pendingQuestion ? { pendingQuestion } : {}), questionCounts, displayedSkus, turnAction: action, budget, updatedTurn: input.currentState.turn };
+  const rejectedNow: NonNullable<PurchaseTask["rejectedSkus"]> = [];
+  let selectedNow: string | undefined;
+  let clearCurrentRecommendation = false;
+  let nextRequiredAction: PurchaseTransition["nextRequiredAction"];
+  if (!changedGoal && action.kind === "reject_current") {
+    const targets = mentionedSkus(action, "rejection");
+    if (!targets.length && currentRecommendation?.primarySku) targets.push(currentRecommendation.primarySku);
+    const reason = rejectionReason(input.userMessage);
+    for (const sku of targets) rejectedNow.push({ sku, quote: action.quote, reason, turn: input.currentState.turn });
+    if (targets.length) {
+      decisionStage = "clarifying_rejection";
+      clearCurrentRecommendation = true;
+      if (reason === "unknown") {
+        pendingTaskQuestion = { field: "rejectionReason", reason: "确认哪一点不合适，避免按同一方向继续推荐", sku: targets[0] };
+        nextRequiredAction = "clarify_rejection_reason";
+      }
+    }
+  } else if (!changedGoal && action.kind === "accept_current" && currentRecommendation) {
+    if (/都/.test(input.userMessage) && currentRecommendation.alternativeSkus.length) {
+      pendingTaskQuestion = { field: "selectionChoice", reason: "确认最终想选哪一款" };
+      nextRequiredAction = "choose_between_recommendations";
+    } else {
+      selectedNow = currentRecommendation.primarySku;
+    }
+  } else if (!changedGoal && action.kind === "select_product") {
+    selectedNow = mentionedSkus(action, "selection")[0];
+  }
+
+  const task: PurchaseTask = {
+    goal: nextGoal,
+    ...(pendingQuestion ? { pendingQuestion } : {}),
+    ...(pendingTaskQuestion ? { pendingTaskQuestion } : {}),
+    questionCounts,
+    displayedSkus,
+    turnAction: action,
+    budget,
+    decisionStage,
+    ...(currentRecommendation ? { currentRecommendation } : {}),
+    recommendationHistory,
+    ...(selectedSku ? { selectedSku } : {}),
+    rejectedSkus,
+    updatedTurn: input.currentState.turn,
+  };
+  return {
+    task,
+    effectiveRejectedSkus: [...new Set([...rejectedSkus.map((item) => item.sku), ...rejectedNow.map((item) => item.sku)])],
+    ...(nextRequiredAction ? { nextRequiredAction } : {}),
+    commit: { action, rejected: rejectedNow, ...(selectedNow ? { selectedSku: selectedNow } : {}), ...(clearCurrentRecommendation ? { clearCurrentRecommendation: true } : {}) },
+  };
+}
+
+export function updatePurchaseTask(input: { previous?: PurchaseTask; previousState: UserState; currentState: UserState; understanding: TurnUnderstanding; userMessage: string }): PurchaseTask {
+  return transitionPurchaseTask(input).task;
 }
 
 export function stateForPurchaseTask(state: UserState, task: PurchaseTask): UserState {
@@ -96,11 +198,49 @@ export function askPurchaseQuestion(task: PurchaseTask, field: StateField, reaso
   return { ...task, questionCounts: { ...task.questionCounts, [field]: askedCount }, pendingQuestion: { field, askedCount, reason } };
 }
 
-export function completePurchaseTask(task: PurchaseTask, result: Pick<DecisionResult, "action" | "candidateSkus" | "recommendations">): PurchaseTask {
+export function completePurchaseTask(task: PurchaseTask, result: Pick<DecisionResult, "action" | "candidateSkus" | "recommendations"> & { versions?: DecisionResult["versions"] }, transition?: PurchaseTransition): PurchaseTask {
+  const normalized = normalizedTask(task);
   const displayed = ["recommend", "comparison_only", "price_list"].includes(result.action)
-    ? [...new Set([...task.displayedSkus, ...result.candidateSkus, ...result.recommendations.map((item) => item.sku)])]
-    : task.displayedSkus;
-  return { ...task, displayedSkus: displayed };
+    ? [...new Set([...normalized.displayedSkus, ...result.candidateSkus, ...result.recommendations.map((item) => item.sku)])]
+    : normalized.displayedSkus;
+  let rejectedSkus = normalized.rejectedSkus ?? [];
+  let selectedSku = normalized.selectedSku;
+  let currentRecommendation = normalized.currentRecommendation;
+  let recommendationHistory = normalized.recommendationHistory ?? [];
+  let decisionStage = normalized.decisionStage;
+  if (transition) {
+    const bySku = new Map(rejectedSkus.map((item) => [item.sku, item]));
+    for (const item of transition.commit.rejected) bySku.set(item.sku, item);
+    rejectedSkus = [...bySku.values()];
+    if (transition.commit.selectedSku) {
+      selectedSku = transition.commit.selectedSku;
+      rejectedSkus = rejectedSkus.filter((item) => item.sku !== selectedSku);
+      decisionStage = "selected";
+    }
+    if (transition.commit.clearCurrentRecommendation) currentRecommendation = undefined;
+  }
+  if (result.action === "recommend" && result.recommendations.length) {
+    currentRecommendation = {
+      primarySku: result.recommendations[0].sku,
+      alternativeSkus: result.recommendations.slice(1).map((item) => item.sku),
+      inputVersion: result.versions?.input ?? normalized.updatedTurn,
+    };
+    const latest = recommendationHistory.at(-1);
+    if (!latest || latest.primarySku !== currentRecommendation.primarySku || latest.alternativeSkus.join("+") !== currentRecommendation.alternativeSkus.join("+")) recommendationHistory = [...recommendationHistory, currentRecommendation];
+    decisionStage = "recommended";
+  } else if (normalized.pendingTaskQuestion?.field === "rejectionReason" || transition?.nextRequiredAction === "clarify_rejection_reason") {
+    decisionStage = "clarifying_rejection";
+  }
+  return {
+    ...normalized,
+    displayedSkus: displayed,
+    decisionStage,
+    ...(currentRecommendation ? { currentRecommendation } : { currentRecommendation: undefined }),
+    recommendationHistory,
+    ...(selectedSku ? { selectedSku } : { selectedSku: undefined }),
+    rejectedSkus,
+    ...(transition ? { lastCommittedAction: transition.commit.action.kind } : {}),
+  };
 }
 
 export function taskNeedsAlternative(task: PurchaseTask) {

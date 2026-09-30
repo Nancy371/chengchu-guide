@@ -1,5 +1,5 @@
 import { PRODUCTS_BY_SKU } from "./catalog";
-import type { FactValue, LifestyleObservation, PurchaseTurnAction, SignalKind, SignalValue, SourcedFact, StateDelta, StateField, TurnSignal, TurnUnderstanding, UserState } from "./types";
+import type { FactValue, LifestyleObservation, PurchaseTurnAction, SignalKind, SignalValue, SkuMention, SourcedFact, StateDelta, StateField, TurnSignal, TurnUnderstanding, UserState } from "./types";
 
 export const EMPTY_STATE: UserState = { facts: {}, history: [], turn: 0 };
 
@@ -11,6 +11,10 @@ const fields = new Set<StateField>([
   "claimedOnlinePrice", "policyTopics",
   "giftBoxType",
 ]);
+
+export function isStateField(value: unknown): value is StateField {
+  return typeof value === "string" && fields.has(value as StateField);
+}
 
 function update(field: StateField, value: FactValue, text: string, status: "confirmed" | "unclear" = "confirmed") {
   return { field, value, quote: text, status, extractedBy: "local" as const };
@@ -87,8 +91,8 @@ export function deterministicExtract(text: string): StateDelta {
   if (/旅行.*礼盒|分装.*礼盒|礼盒.*(?:旅行|分装)/.test(compact)) updates.push(update("giftBoxType", "travel_kit", raw));
   else if (/护肤(?:品)?礼盒|护肤套装礼盒/.test(compact)) updates.push(update("giftBoxType", "skincare_gift_box", raw));
 
-  const sku = compact.match(/P[123]\d{2}/i)?.[0]?.toUpperCase();
-  if (sku) updates.push(update("targetSku", sku, raw));
+  const targetMention = classifySkuMentions(raw).find((mention) => mention.role === "target");
+  if (targetMention) updates.push(update("targetSku", targetMention.sku, targetMention.quote));
 
   const policyTopics: string[] = [];
   if (/促销|优惠|活动/.test(compact)) policyTopics.push("promotion");
@@ -177,15 +181,44 @@ function isExplicitRejection(text: string) {
 
 export function classifyPurchaseAction(text: string, pendingQuestion?: StateField): PurchaseTurnAction {
   const compact = text.replace(/\s+/g, "");
+  const mentions = classifySkuMentions(text);
+  const withMentions = (action: Omit<PurchaseTurnAction, "mentions">): PurchaseTurnAction => ({ ...action, ...(mentions.length ? { mentions } : {}) });
   if (/不要了|不买了|别推荐|不用推荐|不想买|先不买/.test(compact)) return { kind: "end", quote: text };
   if (/不想回答|不愿意回答|不方便说|不想说|别再问|别问了/.test(compact) || (pendingQuestion === "budget" && /还没想好|先看看|先看(?:看)?价格|暂时没想预算/.test(compact))) return { kind: "decline_answer", quote: text };
-  if (/还有(?:其他|别的).*(?:推荐|选择|款)|(?:换|看)(?:一个|一款|别的)|别的呢|其他呢|不要这款/.test(compact)) return { kind: "request_alternative", quote: text };
+  if (mentions.some((item) => item.role === "selection")) return withMentions({ kind: "select_product", quote: text });
+  if (/为什么.*(?:不|没).*(?:推荐|选)|怎么.*(?:不|没).*(?:推荐|选)|(?:不推荐|没推荐).*(?:为什么|原因)/.test(compact)) return withMentions({ kind: "ask_why_not", quote: text, topic: "fit_reason" });
+  if (/上一款|刚才那款|前一款/.test(compact) && /比|比较|区别|不同/.test(compact) || mentions.filter((item) => item.role === "comparison").length >= 2) return withMentions({ kind: "compare_with_previous", quote: text });
+  const productReference = mentions.length > 0 || /这款|这一款|它|刚才(?:推荐)?的/.test(compact);
+  if (productReference && /多少钱|价格|售价|贵不贵/.test(compact)) return withMentions({ kind: "ask_about_product", quote: text, topic: "price" });
+  if (productReference && /促销|优惠|活动|赠品|退换|授权|正品|真假/.test(compact)) return withMentions({ kind: "ask_about_product", quote: text, topic: "policy" });
+  if (mentions.some((item) => item.role === "rejection") || productReference && /不合适|不太合适|不喜欢|不要(?:这|它)|不选/.test(compact)) return withMentions({ kind: "reject_current", quote: text });
+  if (/还有(?:其他|别的).*(?:推荐|选择|款)|(?:换|看)(?:一个|一款|别的)|别的呢|其他呢/.test(compact)) return withMentions({ kind: "request_alternative", quote: text });
   if (/礼盒/.test(compact) && !/赠品/.test(compact)) return { kind: "switch_goal", quote: text };
   if (/想买|只买|改成|改看|换成|还是看|要一套|给我选/.test(compact) && /洗面奶|洁面|保湿|面霜|乳液|凝露|精华|果酸|分装|旅行/.test(compact)) return { kind: "switch_goal", quote: text };
   if (/多少钱|价格|售价|贵不贵/.test(compact)) return { kind: "price_interruption", quote: text };
   if (/促销|优惠|活动|赠品|送什么|同价|差价|退换|退货|换货|授权|正品|真假/.test(compact)) return { kind: "policy_interruption", quote: text };
   if (pendingQuestion) return { kind: "answer_question", quote: text };
+  if (/^(?:这款|这一款|这个|它)?(?:很)?(?:合适|可以|不错|挺好|正合适)(?:吧|呀|啊|的)?[。！!，,]*$|^(?:就)?(?:要|选)(?:这款|这一款|这个|它)[吧。！!]*$/.test(compact)) return withMentions({ kind: "accept_current", quote: text });
+  if (/^(?:这款|这一款|这个|它)?(?:不合适|不太合适|不行|不喜欢)(?:吧|呀|啊|的)?[。！!，,]*$/.test(compact)) return withMentions({ kind: "reject_current", quote: text });
   return { kind: "continue", quote: text };
+}
+
+export function classifySkuMentions(text: string): SkuMention[] {
+  const compact = text.replace(/\s+/g, "");
+  const skus = [...new Set((compact.match(/P[123]\d{2}/gi) ?? []).map((sku) => sku.toUpperCase()))].filter((sku) => Boolean(PRODUCTS_BY_SKU[sku]));
+  if (!skus.length) return [];
+  const comparing = /比|比较|区别|不同|和|跟|与|还是/.test(compact) && skus.length >= 2;
+  return skus.map((sku): SkuMention => {
+    const index = compact.indexOf(sku);
+    const around = compact.slice(Math.max(0, index - 8), index + sku.length + 10);
+    let role: SkuMention["role"] = "target";
+    if (comparing) role = "comparison";
+    else if (/不要|不选|不合适|不喜欢|太贵|排除/.test(around)) role = "rejection";
+    else if (/就要|要它|选它|选择|买它|买P|定P|还是P/.test(around)) role = "selection";
+    else if (/为什么|怎么|多少钱|价格|售价|贵不贵|介绍|说说|了解|适合吗|推荐吗/.test(compact)) role = "inquiry";
+    else if (!/(?:想买|我要|要买|考虑|换成|改看|看看|选)/.test(compact)) role = "inquiry";
+    return { sku, quote: sku, role };
+  });
 }
 
 export function deterministicUnderstand(text: string, pendingQuestion?: StateField): TurnUnderstanding {
@@ -238,7 +271,8 @@ export function deterministicUnderstand(text: string, pendingQuestion?: StateFie
   if (pendingQuestion && !delta.updates.some((item) => item.field === pendingQuestion) && /^(?:我)?(?:觉得)?(?:还可以|还行|一般|差不多|说不好|不太确定|看情况)(?:吧|的)?[。！!，,]*$/.test(compact)) {
     signals.push(signal("communication", "answer_ambiguous", raw, subject));
   }
-  return { delta, signals, lifestyle, purchaseAction: classifyPurchaseAction(raw, pendingQuestion) };
+  const skuMentions = classifySkuMentions(raw);
+  return { delta, signals, lifestyle, purchaseAction: classifyPurchaseAction(raw, pendingQuestion), ...(skuMentions.length ? { skuMentions } : {}) };
 }
 
 export function validateDelta(delta: unknown, text: string): StateDelta | null {
@@ -328,13 +362,14 @@ export function validateUnderstanding(value: unknown, text: string, pendingQuest
   let purchaseAction: PurchaseTurnAction | undefined;
   if (raw.purchaseAction && typeof raw.purchaseAction === "object") {
     const candidate = raw.purchaseAction as Partial<PurchaseTurnAction>;
-    const kinds = new Set<PurchaseTurnAction["kind"]>(["answer_question", "switch_goal", "request_alternative", "price_interruption", "policy_interruption", "decline_answer", "end", "continue"]);
+    const kinds = new Set<PurchaseTurnAction["kind"]>(["answer_question", "switch_goal", "accept_current", "reject_current", "request_alternative", "ask_why_not", "compare_with_previous", "ask_about_product", "select_product", "price_interruption", "policy_interruption", "decline_answer", "end", "continue"]);
     if (candidate.kind && kinds.has(candidate.kind) && typeof candidate.quote === "string" && candidate.quote && text.includes(candidate.quote)) {
       const local = classifyPurchaseAction(candidate.quote, pendingQuestion);
-      if (local.kind === candidate.kind) purchaseAction = { kind: candidate.kind, quote: candidate.quote };
+      if (local.kind === candidate.kind) purchaseAction = local;
     }
   }
-  return { delta, signals, lifestyle, purchaseAction };
+  const skuMentions = classifySkuMentions(text);
+  return { delta, signals, lifestyle, purchaseAction, ...(skuMentions.length ? { skuMentions } : {}) };
 }
 
 export function mergeUnderstanding(primary: TurnUnderstanding | null, fallback: TurnUnderstanding): TurnUnderstanding {
@@ -344,7 +379,7 @@ export function mergeUnderstanding(primary: TurnUnderstanding | null, fallback: 
     for (const item of [...first, ...second]) byKey.set(`${item.kind}:${String(item.value)}`, item);
     return [...byKey.values()];
   };
-  return { delta, signals: mergeUnique(primary?.signals, fallback.signals), lifestyle: mergeUnique(primary?.lifestyle, fallback.lifestyle), purchaseAction: primary?.purchaseAction ?? fallback.purchaseAction };
+  return { delta, signals: mergeUnique(primary?.signals, fallback.signals), lifestyle: mergeUnique(primary?.lifestyle, fallback.lifestyle), purchaseAction: primary?.purchaseAction ?? fallback.purchaseAction, skuMentions: primary?.skuMentions ?? fallback.skuMentions };
 }
 
 export function mergeDeltas(primary: StateDelta | null, fallback: StateDelta): StateDelta {

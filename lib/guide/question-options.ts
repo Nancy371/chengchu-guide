@@ -1,6 +1,6 @@
 import { PRODUCTS_BY_SKU } from "./catalog";
 import { fact } from "./state";
-import type { ProductFit, QuestionOption, StateField, UserState } from "./types";
+import type { DecisionQuestionField, ProductFit, QuestionOption, StateField, UserState } from "./types";
 
 const option = (id: string, label: string, answerText: string): QuestionOption => ({ id, label, answerText });
 
@@ -18,9 +18,15 @@ function budgetOptions(fits: readonly ProductFit[], state: UserState): QuestionO
   ];
 }
 
-export function questionOptions(field: StateField | undefined, fits: readonly ProductFit[], state: UserState): QuestionOption[] {
+export function questionOptions(field: DecisionQuestionField | undefined, fits: readonly ProductFit[], state: UserState): QuestionOption[] {
   if (!field) return [];
   if (field === "budget") return budgetOptions(fits, state);
+  if (field === "rejectionReason") return [
+    option("reject-price", "价格不合适", "主要是价格不合适"),
+    option("reject-sensory", "香味或洗感", "主要是香味或洗感不合适"),
+    option("reject-direction", "想换个方向", "想换个方向"),
+  ];
+  if (field === "selectionChoice") return [];
   const options: Partial<Record<StateField, QuestionOption[]>> = {
     categories: [
       option("category-cleanser", "洁面", "想买洗面奶"),

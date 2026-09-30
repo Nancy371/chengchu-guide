@@ -1,6 +1,6 @@
 import { KNOWLEDGE_VERSION, PRODUCTS_BY_SKU } from "./catalog";
 import { decide } from "./decision";
-import { effectiveStateView, fact } from "./state";
+import { effectiveStateView, fact, isStateField } from "./state";
 import { checkSafety } from "./tools";
 import { clarificationGoalKey } from "./clarification";
 import { rebuildPurchaseTask, stateForPurchaseTask } from "./purchase-task";
@@ -73,7 +73,7 @@ export function withDecision(context: AgentContext, draft: DecisionDraft, observ
     currentDecision: draft,
     candidateProducts: draft.productFits,
     productFits: draft.productFits.filter((fit) => fit.status !== "excluded"),
-    requiredMissingFields: [...draft.questionFields],
+    requiredMissingFields: draft.questionFields.filter(isStateField),
     completedActions: observations.map((observation) => observation.tool),
     observations: [...observations],
     pendingQuestions: [...draft.questionFields],

@@ -8,7 +8,7 @@ import { clarificationGoalKey, comparableFits, exhaustedLowRiskQuestion, matchin
 import { DeepSeekModelAdapter } from "./model";
 import { D1GuideRepository } from "./repository";
 import { composeResult } from "./response";
-import { deterministicExtract, deterministicUnderstand, fact } from "./state";
+import { deterministicExtract, deterministicUnderstand, fact, isStateField } from "./state";
 import { verifiedState } from "./verified-state";
 import { askPurchaseQuestion, completePurchaseTask, updatePurchaseTask } from "./purchase-task";
 import type { AgentTrace, DecisionResult, FinalDecisionProposal, ModelAudit, SessionRecord, TurnUnderstanding } from "./types";
@@ -82,7 +82,8 @@ export class ConversationRuntime {
     }
 
     const audits: ModelAudit[] = [];
-    let understanding: TurnUnderstanding = deterministicUnderstand(text, begin.previousResult?.purchaseTask?.pendingQuestion?.field ?? begin.previousResult?.clarification?.field ?? begin.previousResult?.questionFields[0]);
+    const initialPending = begin.previousResult?.purchaseTask?.pendingQuestion?.field ?? begin.previousResult?.clarification?.field ?? begin.previousResult?.questionFields[0];
+    let understanding: TurnUnderstanding = deterministicUnderstand(text, isStateField(initialPending) ? initialPending : undefined);
     let checkpoint: SessionRecord | null = null;
     try {
       const predecessor = await this.awaitPredecessors(sessionId, begin.inputVersion, userId);
@@ -97,7 +98,8 @@ export class ConversationRuntime {
       const previousResult = predecessor.result?.versions.state === predecessor.stateVersion ? predecessor.result : begin.previousResult?.versions.state === predecessor.stateVersion ? begin.previousResult : null;
       const nextCategory = deterministicExtract(text).updates.find((item) => item.field === "categories")?.value;
       const categoryChanged = Array.isArray(nextCategory) && JSON.stringify(nextCategory) !== JSON.stringify(predecessor.state.facts.categories?.value);
-      const pendingQuestion = categoryChanged ? undefined : previousResult?.purchaseTask?.pendingQuestion?.field ?? previousResult?.clarification?.field ?? previousResult?.questionFields[0];
+      const pendingCandidate = categoryChanged ? undefined : previousResult?.purchaseTask?.pendingQuestion?.field ?? previousResult?.clarification?.field ?? previousResult?.questionFields[0];
+      const pendingQuestion = isStateField(pendingCandidate) ? pendingCandidate : undefined;
       const verified = await verifiedState.update({ currentState: predecessor.state, userMessage: text, pendingQuestion,
         extract: (message, state, pendingQuestion) => this.model.extract(message, state, pendingQuestion) });
       if (verified.audit.model) audits.push(verified.audit.model);
@@ -215,7 +217,7 @@ export class ConversationRuntime {
         memories: liveMemory.memories,
         previousResult,
         updatedFields,
-        questionAttempt: draft.questionFields[0] ? (matchingProgress(agentContext, draft.questionFields[0])?.askedCount ?? 0) + 1 : undefined,
+        questionAttempt: isStateField(draft.questionFields[0]) ? (matchingProgress(agentContext, draft.questionFields[0])?.askedCount ?? 0) + 1 : undefined,
       });
       let rendered = null;
       let renderFallbackReason: string | undefined;
@@ -262,10 +264,10 @@ export class ConversationRuntime {
         agentTrace,
       });
       const askedField = composed.questionFields[0];
-      const clarification = askedField ? nextClarificationProgress(agentContext, askedField, draft.routeReason)
+      const clarification = isStateField(askedField) ? nextClarificationProgress(agentContext, askedField, draft.routeReason)
         : ["price_answer", "policy_unknown", "comparison_only"].includes(composed.action) && agentContext.clarification?.goalKey === clarificationGoalKey(checkpoint.state)
           ? agentContext.clarification : undefined;
-      const taskWithQuestion = askedField ? askPurchaseQuestion(agentContext.purchaseTask as typeof purchaseTask, askedField, draft.routeReason) : agentContext.purchaseTask as typeof purchaseTask;
+      const taskWithQuestion = isStateField(askedField) ? askPurchaseQuestion(agentContext.purchaseTask as typeof purchaseTask, askedField, draft.routeReason) : agentContext.purchaseTask as typeof purchaseTask;
       const completedTask = completePurchaseTask(taskWithQuestion, composed);
       const result = { ...composed, ...(clarification ? { clarification } : {}), purchaseTask: completedTask };
       const committed = await this.repository.commitResult(sessionId, requestId, begin.inputVersion, checkpoint.stateVersion, result);
@@ -297,7 +299,8 @@ export class ConversationRuntime {
       const current = await this.repository.getSession(sessionId, userId);
       if (current?.appliedInputVersion === begin.inputVersion - 1) {
         const priorTask = current.result?.purchaseTask ?? begin.previousResult?.purchaseTask ?? current.state.purchaseTask;
-        const verified = await verifiedState.update({ currentState: current.state, userMessage: text, pendingQuestion: priorTask?.pendingQuestion?.field ?? begin.previousResult?.questionFields[0] });
+        const fallbackPending = priorTask?.pendingQuestion?.field ?? begin.previousResult?.questionFields[0];
+        const verified = await verifiedState.update({ currentState: current.state, userMessage: text, pendingQuestion: isStateField(fallbackPending) ? fallbackPending : undefined });
         understanding = verified.understanding;
         const purchaseTask = updatePurchaseTask({ previous: priorTask, previousState: current.state, currentState: verified.state, understanding, userMessage: text });
         checkpoint = await this.repository.commitState(sessionId, begin.inputVersion, current.stateVersion, { ...verified.state, purchaseTask });

@@ -25,6 +25,9 @@ export type StateField =
   | "giftBoxType"
   | "policyTopics";
 
+export type TaskQuestionField = "rejectionReason" | "selectionChoice";
+export type DecisionQuestionField = StateField | TaskQuestionField;
+
 export type FactValue = string | number | boolean | string[];
 
 export interface SourcedFact {
@@ -52,8 +55,29 @@ export interface UserState {
   purchaseTask?: PurchaseTask;
 }
 
-export type PurchaseTurnActionKind = "answer_question" | "switch_goal" | "request_alternative" | "price_interruption" | "policy_interruption" | "decline_answer" | "end" | "continue";
-export interface PurchaseTurnAction { kind: PurchaseTurnActionKind; quote: string }
+export type SkuMentionRole = "target" | "comparison" | "inquiry" | "rejection" | "selection";
+export interface SkuMention { sku: string; quote: string; role: SkuMentionRole }
+export type PurchaseTurnActionKind =
+  | "answer_question"
+  | "switch_goal"
+  | "accept_current"
+  | "reject_current"
+  | "request_alternative"
+  | "ask_why_not"
+  | "compare_with_previous"
+  | "ask_about_product"
+  | "select_product"
+  | "price_interruption"
+  | "policy_interruption"
+  | "decline_answer"
+  | "end"
+  | "continue";
+export interface PurchaseTurnAction {
+  kind: PurchaseTurnActionKind;
+  quote: string;
+  mentions?: SkuMention[];
+  topic?: "price" | "policy" | "facts" | "fit_reason";
+}
 export interface PurchaseGoal {
   kind: "categories" | "gift_box_ambiguous" | "unsupported_skincare_gift_box";
   categories: Product["category"][];
@@ -64,10 +88,17 @@ export interface PurchaseGoal {
 export interface PurchaseTask {
   goal: PurchaseGoal;
   pendingQuestion?: { field: StateField; askedCount: number; reason: string };
+  pendingTaskQuestion?: { field: TaskQuestionField; reason: string; sku?: string };
   questionCounts?: Partial<Record<StateField, number>>;
   displayedSkus: string[];
   turnAction: PurchaseTurnAction;
   budget: { status: "unknown" | "limited" | "unlimited" | "declined"; fen?: number; goalVersion: number };
+  decisionStage: "discovering" | "recommended" | "clarifying_rejection" | "selected";
+  currentRecommendation?: { primarySku: string; alternativeSkus: string[]; inputVersion: number };
+  recommendationHistory?: Array<{ primarySku: string; alternativeSkus: string[]; inputVersion: number }>;
+  selectedSku?: string;
+  rejectedSkus?: Array<{ sku: string; quote: string; reason: "unknown" | "price" | "sensory" | "fragrance" | "direction" | "other"; turn: number }>;
+  lastCommittedAction?: PurchaseTurnActionKind;
   updatedTurn: number;
 }
 
@@ -102,6 +133,7 @@ export interface TurnUnderstanding {
   signals: TurnSignal[];
   lifestyle: LifestyleObservation[];
   purchaseAction?: PurchaseTurnAction;
+  skuMentions?: SkuMention[];
 }
 
 export interface HabitMemory {
@@ -134,7 +166,7 @@ export interface ConversationPolicy {
   conversationActs: ConversationAct[];
   tone: "light_warm" | "calm_direct";
   pressureLevel: "low";
-  selectedQuestionFields: StateField[];
+  selectedQuestionFields: DecisionQuestionField[];
   responseLength: "short" | "medium";
   shouldAcknowledge: boolean;
   shouldExplainReason: boolean;
@@ -226,7 +258,7 @@ export interface DecisionDraft {
   action: DecisionAction;
   route: "safety" | "direct" | "reasoning" | "degraded";
   routeReason: string;
-  questionFields: StateField[];
+  questionFields: DecisionQuestionField[];
   candidateSkus: string[];
   recommendations: Recommendation[];
   productFits: ProductFit[];
@@ -307,7 +339,7 @@ export interface AgentContext {
   currentDecision: DecisionDraft | null;
   completedActions: ReadonlyArray<DecisionToolName>;
   observations: ReadonlyArray<ToolObservation>;
-  pendingQuestions: ReadonlyArray<StateField>;
+  pendingQuestions: ReadonlyArray<DecisionQuestionField>;
   clarification?: ClarificationProgress;
   purchaseTask: Readonly<PurchaseTask>;
   allowedActions: ReadonlyArray<PlannerAction["action"]>;

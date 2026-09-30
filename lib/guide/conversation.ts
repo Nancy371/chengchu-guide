@@ -4,6 +4,7 @@ import type {
   ConversationAct,
   ConversationBehaviorSkill,
   ConversationPolicy,
+  DecisionQuestionField,
   DecisionDraft,
   DecisionResult,
   HabitMemory,
@@ -21,19 +22,19 @@ export interface FactBlock {
 export interface ConversationPlan {
   policy: ConversationPolicy;
   factBlocks: FactBlock[];
-  questionGoals: Array<{ field: StateField; fallback: string }>;
+  questionGoals: Array<{ field: DecisionQuestionField; fallback: string }>;
   turnContext: {
-    previousQuestion?: { field: StateField; text: string };
+    previousQuestion?: { field: DecisionQuestionField; text: string };
     confirmedAnswer?: { field: StateField; quote: string; summary: string; acknowledgement: string; anchors: string[] };
     currentAction: DecisionDraft["action"];
-    nextQuestionGoal?: { field: StateField; text: string };
+    nextQuestionGoal?: { field: DecisionQuestionField; text: string };
   };
 }
 
 export interface RenderProposal {
   acknowledgement?: string;
   blockIds?: string[];
-  questions?: Array<{ field: StateField; text: string }>;
+  questions?: Array<{ field: DecisionQuestionField; text: string }>;
   closing?: string;
   actsUsed?: ConversationAct[];
 }
@@ -44,7 +45,7 @@ export interface RenderedCopy {
   factBlockIds: string[];
 }
 
-const questionCopy: Partial<Record<StateField, string>> = {
+const questionCopy: Partial<Record<DecisionQuestionField, string>> = {
   categories: "这次想先看哪一类：洁面、保湿、精华，还是旅行分装呢？",
   budget: "最后再确认一下，这次大概想控制在多少呢？不限预算也可以。",
   giftBoxType: "你想找旅行分装瓶礼盒，还是装护肤品的套装礼盒呢？",
@@ -53,10 +54,12 @@ const questionCopy: Partial<Record<StateField, string>> = {
   sensitiveTendency: "平时用新护肤品，皮肤容易泛红或刺痛吗？",
   acidExperience: "之前用过果酸或类似的焕肤产品吗？",
   coreConcern: "真要取舍的话，你更想保住清爽肤感、无香，还是价格呢？",
+  rejectionReason: "主要是哪一点不合适：价格、香味或洗感，还是想换个方向呢？",
+  selectionChoice: "两款里你更想定哪一款呢？",
 };
 
-function questionFor(field: StateField, state: UserState, attempt = 1) {
-  const followups: Partial<Record<StateField, string[]>> = {
+function questionFor(field: DecisionQuestionField, state: UserState, attempt = 1) {
+  const followups: Partial<Record<DecisionQuestionField, string[]>> = {
     sensitiveTendency: ["我换个具体的问法：平时用新护肤品基本没反应，还是偶尔会泛红、刺痛？", "如果只说多数时候，皮肤算容易敏感吗？", "你平时会把自己归为敏感皮肤吗？"],
     currentDiscomfort: ["我先确认现在的情况：有没有刺痛、疼痛或破损？", "这些不舒服是现在还有，还是已经好了？", "目前皮肤有破损或明显疼痛吗？"],
     skinType: ["洗完脸更容易紧绷，还是过一会儿容易出油？", "如果只看平时多数时候，脸更偏干还是偏油？", "不用精确判断肤质，日常更常觉得干，还是更常出油？"],
@@ -241,7 +244,7 @@ function categoryName(value: string) {
 function confirmedAnswerFor(state: UserState, updatedFields: StateField[], previousResult?: DecisionResult | null) {
   const preferred = previousResult?.questionFields[0];
   const priority: StateField[] = [
-    ...(preferred ? [preferred] : []),
+    ...(preferred && preferred !== "rejectionReason" && preferred !== "selectionChoice" ? [preferred] : []),
     "budget", "skinType", "fragrancePreference", "currentDiscomfort", "sensitiveTendency", "acidExperience", "categories", "giftBoxType", "coreConcern", "texturePreference",
   ];
   const field = priority.find((item) => updatedFields.includes(item) && state.facts[item]?.status === "confirmed");
@@ -382,7 +385,7 @@ function emojiCount(text: string) {
   return (text.match(/[\p{Extended_Pictographic}]/gu) ?? []).length;
 }
 
-function claimsUnselectedGap(text: string, selectedFields: StateField[]) {
+function claimsUnselectedGap(text: string, selectedFields: DecisionQuestionField[]) {
   const missingClaim = /(?:还没|没有|没|尚未|未)(?:说|提|提到|明确|确定|说明|告诉)/;
   if (!missingClaim.test(text)) return false;
   const selected = new Set(selectedFields);
